@@ -206,12 +206,18 @@ static void parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
     }
 }
 
-static bool recv_all(int fd, void *buf, size_t len)
+static bool recv_all(deskflow_client_t *client, int fd, void *buf, size_t len)
 {
     uint8_t *p = buf;
     while (len) {
         int got = recv(fd, p, len, 0);
-        if (got <= 0) return false;
+        if (got == 0) return false;
+        if (got < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (ble_hid_connected(client->target)) continue;
+            }
+            return false;
+        }
         p += got; len -= got;
     }
     return true;
@@ -242,15 +248,15 @@ static bool send_frame(int fd, const void *data, uint32_t len)
 static void serve(deskflow_client_t *client, int fd)
 {
     uint8_t frame[1024];
-    while (true) {
+    while (ble_hid_connected(client->target)) {
         uint32_t net_len;
-        if (!recv_all(fd, &net_len, sizeof(net_len))) break;
+        if (!recv_all(client, fd, &net_len, sizeof(net_len))) break;
         uint32_t len = ntohl(net_len);
         if (!len || len > sizeof(frame)) {
             ESP_LOGW(TAG, "invalid frame size: %" PRIu32, len);
             break;
         }
-        if (!recv_all(fd, frame, len)) break;
+        if (!recv_all(client, fd, frame, len)) break;
         if (len >= 11 && (!memcmp(frame, "Synergy", 7) || !memcmp(frame, "Barrier", 7))) {
             uint8_t hello[128];
             const char *magic = !memcmp(frame, "Barrier", 7) ? "Barrier" : "Synergy";
@@ -280,7 +286,10 @@ static void client_task(void *arg)
 {
     deskflow_client_t *client_ctx = arg;
     while (true) {
+        ble_hid_wait_connected(client_ctx->target);
         wifi_wait_connected();
+        if (!ble_hid_connected(client_ctx->target)) continue;
+
         int client = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
         struct sockaddr_in addr = { .sin_family = AF_INET,
             .sin_port = htons(APP_DESKFLOW_PORT) };
@@ -293,13 +302,17 @@ static void client_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
         }
+        struct timeval receive_timeout = { .tv_sec = 1, .tv_usec = 0 };
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+                   &receive_timeout, sizeof(receive_timeout));
         ESP_LOGI(TAG, "[%s] connected to Deskflow server %s:%d",
                  client_ctx->screen_name, APP_DESKFLOW_SERVER_IP, APP_DESKFLOW_PORT);
         serve(client_ctx, client);
         shutdown(client, SHUT_RDWR);
         close(client);
-        ESP_LOGI(TAG, "[%s] Deskflow server disconnected; reconnecting",
-                 client_ctx->screen_name);
+        ESP_LOGI(TAG, "[%s] Deskflow session closed%s",
+                 client_ctx->screen_name,
+                 ble_hid_connected(client_ctx->target) ? "; reconnecting" : " (HID offline)");
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

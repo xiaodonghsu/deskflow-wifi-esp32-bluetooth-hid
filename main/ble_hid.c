@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
 #include "host/util/util.h"
@@ -33,6 +34,7 @@ typedef struct {
 
 static hid_peer_t s_peers[APP_MAX_HID_DEVICES];
 static portMUX_TYPE s_peers_lock = portMUX_INITIALIZER_UNLOCKED;
+static EventGroupHandle_t s_peer_events;
 
 static const uint8_t s_report_map[] = {
     0x05,0x01, 0x09,0x06, 0xA1,0x01, 0x85,0x01,
@@ -252,6 +254,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                 ESP_LOGW(TAG, "no free HID target; disconnecting extra host");
                 ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             } else {
+                xEventGroupSetBits(s_peer_events, BIT(target));
                 ESP_LOGI(TAG, "HID host connected as target %d", target + 1);
                 ble_gap_security_initiate(event->connect.conn_handle);
                 advertise();
@@ -263,6 +266,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT: {
         int target = target_for_handle(event->disconnect.conn.conn_handle);
         if (target >= 0) {
+            xEventGroupClearBits(s_peer_events, BIT(target));
             taskENTER_CRITICAL(&s_peers_lock);
             s_peers[target].connected = false;
             s_peers[target].conn_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -352,6 +356,9 @@ static void host_task(void *param)
 
 esp_err_t ble_hid_init(void)
 {
+    s_peer_events = xEventGroupCreate();
+    if (!s_peer_events) return ESP_ERR_NO_MEM;
+
     for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i)
         s_peers[i].conn_handle = BLE_HS_CONN_HANDLE_NONE;
     load_peers();
@@ -385,6 +392,12 @@ bool ble_hid_connected(size_t target)
     connected = s_peers[target].connected;
     taskEXIT_CRITICAL(&s_peers_lock);
     return connected;
+}
+
+void ble_hid_wait_connected(size_t target)
+{
+    if (target >= APP_MAX_HID_DEVICES) return;
+    xEventGroupWaitBits(s_peer_events, BIT(target), pdFALSE, pdTRUE, portMAX_DELAY);
 }
 
 static void notify(size_t target, uint16_t handle, const void *data, uint16_t len)

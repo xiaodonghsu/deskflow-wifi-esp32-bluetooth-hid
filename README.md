@@ -1,8 +1,9 @@
 # Deskflow Wi-Fi → ESP32-S3 NimBLE HID
 
-ESP32-S3 connects to Wi-Fi, opens multiple Deskflow/Synergy-compatible TCP
-client sessions, and forwards each screen's keyboard/mouse events to its
-corresponding paired computer, tablet, or phone over Bluetooth LE HID.
+ESP32-S3 connects to Wi-Fi and opens a numbered Deskflow/Synergy-compatible TCP
+client session only when the corresponding Bluetooth HID host is connected.
+Each screen's keyboard/mouse events are forwarded to its paired computer,
+tablet, or phone.
 
 ## Defaults
 
@@ -45,6 +46,12 @@ The ESP32 continues fast connectable advertising until all three slots are
 connected, and resumes advertising whenever any target disconnects. The phone
 or tablet must keep Bluetooth enabled and retain the device in its paired-device
 list.
+
+No Deskflow sessions are created at boot while all HID targets are offline.
+Connecting target 1 creates only `esp32-hid-1`; connecting target 2 then creates
+`esp32-hid-2`. When a HID target disconnects, its Deskflow TCP session is closed
+within approximately one second and is recreated with the same numbered name
+when that target reconnects.
 
 ## Implemented protocol subset
 
