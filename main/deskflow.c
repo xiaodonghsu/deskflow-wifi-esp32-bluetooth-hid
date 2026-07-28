@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include "esp_log.h"
@@ -15,18 +16,29 @@
 #include "lwip/sockets.h"
 
 static const char *TAG = "deskflow";
-static uint8_t s_modifiers, s_keys[6], s_buttons;
-static int16_t s_last_x, s_last_y;
-static bool s_have_position;
+
+typedef struct {
+    size_t target;
+    char screen_name[32];
+    char task_name[16];
+    uint8_t modifiers;
+    uint8_t keys[6];
+    uint8_t buttons;
+    int16_t last_x;
+    int16_t last_y;
+    bool have_position;
+} deskflow_client_t;
+
+static deskflow_client_t s_clients[APP_MAX_HID_DEVICES];
 
 static uint16_t be16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | p[1]; }
 
-static void mouse_move(int dx, int dy)
+static void mouse_move(deskflow_client_t *client, int dx, int dy)
 {
     while (dx || dy) {
         int8_t sx = dx > 127 ? 127 : dx < -127 ? -127 : (int8_t)dx;
         int8_t sy = dy > 127 ? 127 : dy < -127 ? -127 : (int8_t)dy;
-        ble_hid_mouse(s_buttons, sx, sy, 0);
+        ble_hid_mouse(client->target, client->buttons, sx, sy, 0);
         dx -= sx;
         dy -= sy;
     }
@@ -73,38 +85,38 @@ static uint8_t hid_modifiers(uint16_t deskflow_mask)
     return m;
 }
 
-static void key_event(uint16_t key, uint16_t mask, bool down)
+static void key_event(deskflow_client_t *client, uint16_t key, uint16_t mask, bool down)
 {
     uint8_t code = hid_key(key);
-    s_modifiers = hid_modifiers(mask);
+    client->modifiers = hid_modifiers(mask);
     switch (key) {
-    case 0xEFE1: if (down) s_modifiers |= 0x02; else s_modifiers &= ~0x02; break;
-    case 0xEFE2: if (down) s_modifiers |= 0x20; else s_modifiers &= ~0x20; break;
-    case 0xEFE3: if (down) s_modifiers |= 0x01; else s_modifiers &= ~0x01; break;
-    case 0xEFE4: if (down) s_modifiers |= 0x10; else s_modifiers &= ~0x10; break;
-    case 0xEFE9: if (down) s_modifiers |= 0x04; else s_modifiers &= ~0x04; break;
-    case 0xEFEA: if (down) s_modifiers |= 0x40; else s_modifiers &= ~0x40; break;
+    case 0xEFE1: if (down) client->modifiers |= 0x02; else client->modifiers &= ~0x02; break;
+    case 0xEFE2: if (down) client->modifiers |= 0x20; else client->modifiers &= ~0x20; break;
+    case 0xEFE3: if (down) client->modifiers |= 0x01; else client->modifiers &= ~0x01; break;
+    case 0xEFE4: if (down) client->modifiers |= 0x10; else client->modifiers &= ~0x10; break;
+    case 0xEFE9: if (down) client->modifiers |= 0x04; else client->modifiers &= ~0x04; break;
+    case 0xEFEA: if (down) client->modifiers |= 0x40; else client->modifiers &= ~0x40; break;
     case 0xEFE7:
-    case 0xEFEB: if (down) s_modifiers |= 0x08; else s_modifiers &= ~0x08; break;
+    case 0xEFEB: if (down) client->modifiers |= 0x08; else client->modifiers &= ~0x08; break;
     case 0xEFE8:
-    case 0xEFEC: if (down) s_modifiers |= 0x80; else s_modifiers &= ~0x80; break;
+    case 0xEFEC: if (down) client->modifiers |= 0x80; else client->modifiers &= ~0x80; break;
     default: break;
     }
-    ESP_LOGI(TAG, "key %s id=0x%04x mask=0x%04x hid=0x%02x modifiers=0x%02x",
-             down ? "down" : "up", key, mask, code, s_modifiers);
+    ESP_LOGI(TAG, "[%s] key %s id=0x%04x hid=0x%02x",
+             client->screen_name, down ? "down" : "up", key, code);
     if (code) {
         if (down) {
             for (int i = 0; i < 6; ++i)
-                if (s_keys[i] == code) goto send;
+                if (client->keys[i] == code) goto send;
             for (int i = 0; i < 6; ++i)
-                if (!s_keys[i]) { s_keys[i] = code; break; }
+                if (!client->keys[i]) { client->keys[i] = code; break; }
         } else {
             for (int i = 0; i < 6; ++i)
-                if (s_keys[i] == code) s_keys[i] = 0;
+                if (client->keys[i] == code) client->keys[i] = 0;
         }
     }
 send:
-    ble_hid_keyboard(s_modifiers, s_keys);
+    ble_hid_keyboard(client->target, client->modifiers, client->keys);
 }
 
 static void put_be16(uint8_t *p, int16_t value)
@@ -134,7 +146,7 @@ static void send_screen_info(int fd)
     }
 }
 
-static void parse_frame(int fd, const uint8_t *p, size_t n)
+static void parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, size_t n)
 {
     if (n < 4) return;
     if (!memcmp(p, "QINF", 4)) {
@@ -142,46 +154,55 @@ static void parse_frame(int fd, const uint8_t *p, size_t n)
     } else if (!memcmp(p, "CALV", 4)) {
         send_frame(fd, "CALV", 4);
     } else if (!memcmp(p, "CINN", 4) && n >= 14) {
-        s_last_x = (int16_t)be16(p + 4);
-        s_last_y = (int16_t)be16(p + 6);
-        s_have_position = true;
-        ESP_LOGI(TAG, "cursor entered at %d,%d", s_last_x, s_last_y);
+        client->last_x = (int16_t)be16(p + 4);
+        client->last_y = (int16_t)be16(p + 6);
+        client->have_position = true;
+        memset(client->keys, 0, sizeof(client->keys));
+        client->buttons = 0;
+        client->modifiers = hid_modifiers(be16(p + 12));
+        ble_hid_keyboard(client->target, client->modifiers, client->keys);
+        ble_hid_mouse(client->target, 0, 0, 0, 0);
+        ESP_LOGI(TAG, "[%s] cursor entered at %d,%d",
+                 client->screen_name, client->last_x, client->last_y);
     } else if (!memcmp(p, "DKDL", 4) && n >= 14) {
         /* Protocol 1.8: key, modifier mask, physical button, language string. */
-        key_event(be16(p + 4), be16(p + 6), true);
+        key_event(client, be16(p + 4), be16(p + 6), true);
     } else if (!memcmp(p, "DKDN", 4) && n >= 10) {
-        key_event(be16(p + 4), be16(p + 6), true);
+        key_event(client, be16(p + 4), be16(p + 6), true);
     }
-    else if (!memcmp(p, "DKUP", 4) && n >= 10) key_event(be16(p + 4), be16(p + 6), false);
+    else if (!memcmp(p, "DKUP", 4) && n >= 10) key_event(client, be16(p + 4), be16(p + 6), false);
     else if (!memcmp(p, "DKRP", 4) && n >= 12) {
-        key_event(be16(p + 4), be16(p + 6), true);
-        key_event(be16(p + 4), be16(p + 6), false);
+        key_event(client, be16(p + 4), be16(p + 6), true);
+        key_event(client, be16(p + 4), be16(p + 6), false);
     } else if (!memcmp(p, "DMDN", 4) && n >= 5) {
         unsigned b = p[4];
-        if (b >= 1 && b <= 5) s_buttons |= 1u << (b - 1);
-        ble_hid_mouse(s_buttons, 0, 0, 0);
+        if (b >= 1 && b <= 5) client->buttons |= 1u << (b - 1);
+        ble_hid_mouse(client->target, client->buttons, 0, 0, 0);
     } else if (!memcmp(p, "DMUP", 4) && n >= 5) {
         unsigned b = p[4];
-        if (b >= 1 && b <= 5) s_buttons &= ~(1u << (b - 1));
-        ble_hid_mouse(s_buttons, 0, 0, 0);
+        if (b >= 1 && b <= 5) client->buttons &= ~(1u << (b - 1));
+        ble_hid_mouse(client->target, client->buttons, 0, 0, 0);
     } else if (!memcmp(p, "DMRM", 4) && n >= 8) {
-        mouse_move((int16_t)be16(p + 4), (int16_t)be16(p + 6));
+        mouse_move(client, (int16_t)be16(p + 4), (int16_t)be16(p + 6));
     } else if (!memcmp(p, "DMMV", 4) && n >= 8) {
         int16_t x = be16(p + 4), y = be16(p + 6);
-        if (s_have_position) {
-            int dx = x - s_last_x, dy = y - s_last_y;
-            mouse_move(dx, dy);
+        if (client->have_position) {
+            int dx = x - client->last_x, dy = y - client->last_y;
+            mouse_move(client, dx, dy);
         }
-        s_last_x = x; s_last_y = y; s_have_position = true;
+        client->last_x = x; client->last_y = y; client->have_position = true;
     } else if (!memcmp(p, "DMWM", 4) && n >= 8) {
         int16_t dy = be16(p + 6);
         int wheel = dy / 120;
         if (!wheel && dy) wheel = dy > 0 ? 1 : -1;
-        ble_hid_mouse(s_buttons, 0, 0, wheel > 127 ? 127 : wheel < -127 ? -127 : wheel);
+        ble_hid_mouse(client->target, client->buttons, 0, 0,
+                      wheel > 127 ? 127 : wheel < -127 ? -127 : wheel);
     } else if (!memcmp(p, "COUT", 4)) {
-        memset(s_keys, 0, sizeof(s_keys)); s_modifiers = s_buttons = 0;
-        s_have_position = false;
-        ble_hid_keyboard(0, s_keys); ble_hid_mouse(0, 0, 0, 0);
+        memset(client->keys, 0, sizeof(client->keys));
+        client->modifiers = client->buttons = 0;
+        client->have_position = false;
+        ble_hid_keyboard(client->target, 0, client->keys);
+        ble_hid_mouse(client->target, 0, 0, 0, 0);
     }
 }
 
@@ -218,7 +239,7 @@ static bool send_frame(int fd, const void *data, uint32_t len)
     return send_all(fd, packet, len + 4);
 }
 
-static void serve(int fd)
+static void serve(deskflow_client_t *client, int fd)
 {
     uint8_t frame[1024];
     while (true) {
@@ -233,7 +254,7 @@ static void serve(int fd)
         if (len >= 11 && (!memcmp(frame, "Synergy", 7) || !memcmp(frame, "Barrier", 7))) {
             uint8_t hello[128];
             const char *magic = !memcmp(frame, "Barrier", 7) ? "Barrier" : "Synergy";
-            size_t m = strlen(magic), name_len = strlen(APP_DESKFLOW_SCREEN_NAME);
+            size_t m = strlen(magic), name_len = strlen(client->screen_name);
             memcpy(hello, magic, m);
             /* Echo the server's major/minor version, then a 32-bit string length. */
             memcpy(hello + m, frame + m, 4);
@@ -241,22 +262,23 @@ static void serve(int fd)
             hello[m + 5] = (uint8_t)(name_len >> 16);
             hello[m + 6] = (uint8_t)(name_len >> 8);
             hello[m + 7] = (uint8_t)name_len;
-            memcpy(hello + m + 8, APP_DESKFLOW_SCREEN_NAME, name_len);
+            memcpy(hello + m + 8, client->screen_name, name_len);
             if (send_frame(fd, hello, m + 8 + name_len)) {
-                ESP_LOGI(TAG, "protocol handshake (%s) sent", magic);
+                ESP_LOGI(TAG, "[%s] protocol handshake (%s) sent",
+                         client->screen_name, magic);
             } else {
                 ESP_LOGE(TAG, "protocol handshake send failed");
                 break;
             }
         } else {
-            parse_frame(fd, frame, len);
+            parse_frame(client, fd, frame, len);
         }
     }
 }
 
 static void client_task(void *arg)
 {
-    (void)arg;
+    deskflow_client_t *client_ctx = arg;
     while (true) {
         wifi_wait_connected();
         int client = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
@@ -264,24 +286,35 @@ static void client_task(void *arg)
             .sin_port = htons(APP_DESKFLOW_PORT) };
         if (client < 0 || inet_pton(AF_INET, APP_DESKFLOW_SERVER_IP, &addr.sin_addr) != 1 ||
             connect(client, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-            ESP_LOGW(TAG, "connect to %s:%d failed: errno %d",
-                     APP_DESKFLOW_SERVER_IP, APP_DESKFLOW_PORT, errno);
+            ESP_LOGW(TAG, "[%s] connect to %s:%d failed: errno %d",
+                     client_ctx->screen_name, APP_DESKFLOW_SERVER_IP,
+                     APP_DESKFLOW_PORT, errno);
             if (client >= 0) close(client);
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
         }
-        ESP_LOGI(TAG, "connected to Deskflow server %s:%d",
-                 APP_DESKFLOW_SERVER_IP, APP_DESKFLOW_PORT);
-        serve(client);
+        ESP_LOGI(TAG, "[%s] connected to Deskflow server %s:%d",
+                 client_ctx->screen_name, APP_DESKFLOW_SERVER_IP, APP_DESKFLOW_PORT);
+        serve(client_ctx, client);
         shutdown(client, SHUT_RDWR);
         close(client);
-        ESP_LOGI(TAG, "Deskflow server disconnected; reconnecting");
+        ESP_LOGI(TAG, "[%s] Deskflow server disconnected; reconnecting",
+                 client_ctx->screen_name);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
 esp_err_t deskflow_start(void)
 {
-    return xTaskCreate(client_task, "deskflow", 6144, NULL, 5, NULL) == pdPASS
-        ? ESP_OK : ESP_ERR_NO_MEM;
+    for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
+        deskflow_client_t *client = &s_clients[i];
+        client->target = i;
+        snprintf(client->screen_name, sizeof(client->screen_name), "%s%u",
+                 APP_DESKFLOW_SCREEN_NAME_PREFIX, (unsigned)i + 1);
+        snprintf(client->task_name, sizeof(client->task_name), "deskflow-%u",
+                 (unsigned)i + 1);
+        if (xTaskCreate(client_task, client->task_name, 6144, client, 5, NULL) != pdPASS)
+            return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }

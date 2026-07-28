@@ -3,6 +3,8 @@
 
 #include <string.h>
 #include "esp_log.h"
+#include "nvs.h"
+#include "freertos/FreeRTOS.h"
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
 #include "host/util/util.h"
@@ -16,15 +18,21 @@
 void ble_store_config_init(void);
 
 static const char *TAG = "ble_hid";
-static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_keyboard_handle;
 static uint16_t s_mouse_handle;
 static uint8_t s_protocol_mode = 1;
 static uint8_t s_control_point;
 static uint8_t s_own_addr_type;
-static ble_addr_t s_last_peer;
-static bool s_have_last_peer;
-static bool s_directed_advertising;
+
+typedef struct {
+    bool connected;
+    bool has_peer;
+    uint16_t conn_handle;
+    ble_addr_t peer_addr;
+} hid_peer_t;
+
+static hid_peer_t s_peers[APP_MAX_HID_DEVICES];
+static portMUX_TYPE s_peers_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static const uint8_t s_report_map[] = {
     0x05,0x01, 0x09,0x06, 0xA1,0x01, 0x85,0x01,
@@ -98,20 +106,139 @@ static const struct ble_gatt_svc_def s_services[] = {
 };
 
 static void advertise(void);
-static void advertise_for_reconnect(void);
 
-static void remember_peer(uint16_t conn_handle)
+static bool addr_equal(const ble_addr_t *a, const ble_addr_t *b)
+{
+    return a->type == b->type && memcmp(a->val, b->val, sizeof(a->val)) == 0;
+}
+
+static ble_addr_t resolved_peer_addr(const struct ble_gap_conn_desc *desc)
+{
+    static const uint8_t zero_addr[6] = {0};
+    ble_addr_t addr = desc->peer_id_addr;
+    if (addr.type > BLE_ADDR_RANDOM ||
+        memcmp(addr.val, zero_addr, sizeof(zero_addr)) == 0) {
+        addr = desc->peer_ota_addr;
+    }
+    return addr;
+}
+
+static void save_peer(size_t target)
+{
+    uint8_t data[7];
+    char key[8];
+    nvs_handle_t nvs;
+
+    taskENTER_CRITICAL(&s_peers_lock);
+    data[0] = s_peers[target].peer_addr.type;
+    memcpy(data + 1, s_peers[target].peer_addr.val, 6);
+    taskEXIT_CRITICAL(&s_peers_lock);
+
+    snprintf(key, sizeof(key), "peer%u", (unsigned)target);
+    if (nvs_open("hid_slots", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_blob(nvs, key, data, sizeof(data));
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+}
+
+static void load_peers(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open("hid_slots", NVS_READONLY, &nvs) != ESP_OK) return;
+
+    for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
+        uint8_t data[7];
+        size_t len = sizeof(data);
+        char key[8];
+        snprintf(key, sizeof(key), "peer%u", (unsigned)i);
+        if (nvs_get_blob(nvs, key, data, &len) == ESP_OK && len == sizeof(data)) {
+            s_peers[i].peer_addr.type = data[0];
+            memcpy(s_peers[i].peer_addr.val, data + 1, 6);
+            s_peers[i].has_peer = true;
+            s_peers[i].conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        }
+    }
+    nvs_close(nvs);
+}
+
+static int target_for_handle(uint16_t conn_handle)
+{
+    int target = -1;
+    taskENTER_CRITICAL(&s_peers_lock);
+    for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
+        if (s_peers[i].connected && s_peers[i].conn_handle == conn_handle) {
+            target = (int)i;
+            break;
+        }
+    }
+    taskEXIT_CRITICAL(&s_peers_lock);
+    return target;
+}
+
+static unsigned connected_count(void)
+{
+    unsigned count = 0;
+    taskENTER_CRITICAL(&s_peers_lock);
+    for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i)
+        if (s_peers[i].connected) ++count;
+    taskEXIT_CRITICAL(&s_peers_lock);
+    return count;
+}
+
+static int assign_peer(uint16_t conn_handle)
 {
     struct ble_gap_conn_desc desc;
-    if (ble_gap_conn_find(conn_handle, &desc) != 0) return;
+    if (ble_gap_conn_find(conn_handle, &desc) != 0) return -1;
+    ble_addr_t addr = resolved_peer_addr(&desc);
+    int target = -1;
 
-    s_last_peer = desc.peer_id_addr;
-    static const uint8_t zero_addr[6] = {0};
-    if (s_last_peer.type > BLE_ADDR_RANDOM ||
-        memcmp(s_last_peer.val, zero_addr, sizeof(zero_addr)) == 0) {
-        s_last_peer = desc.peer_ota_addr;
+    taskENTER_CRITICAL(&s_peers_lock);
+    for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
+        if (!s_peers[i].connected && s_peers[i].has_peer &&
+            addr_equal(&s_peers[i].peer_addr, &addr)) {
+            target = (int)i;
+            break;
+        }
     }
-    s_have_last_peer = true;
+    if (target < 0) {
+        for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
+            if (!s_peers[i].connected && !s_peers[i].has_peer) {
+                target = (int)i;
+                break;
+            }
+        }
+    }
+    if (target < 0) {
+        for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
+            if (!s_peers[i].connected) {
+                target = (int)i;
+                break;
+            }
+        }
+    }
+    if (target >= 0) {
+        s_peers[target].connected = true;
+        s_peers[target].has_peer = true;
+        s_peers[target].conn_handle = conn_handle;
+        s_peers[target].peer_addr = addr;
+    }
+    taskEXIT_CRITICAL(&s_peers_lock);
+
+    return target;
+}
+
+static void update_peer_identity(uint16_t conn_handle)
+{
+    struct ble_gap_conn_desc desc;
+    int target = target_for_handle(conn_handle);
+    if (target < 0 || ble_gap_conn_find(conn_handle, &desc) != 0) return;
+    ble_addr_t addr = resolved_peer_addr(&desc);
+    taskENTER_CRITICAL(&s_peers_lock);
+    s_peers[target].peer_addr = addr;
+    s_peers[target].has_peer = true;
+    taskEXIT_CRITICAL(&s_peers_lock);
+    save_peer((size_t)target);
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)
@@ -120,28 +247,42 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
-            s_conn = event->connect.conn_handle;
-            s_directed_advertising = false;
-            remember_peer(s_conn);
-            ESP_LOGI(TAG, "HID host connected");
-            ble_gap_security_initiate(s_conn);
-        } else advertise();
+            int target = assign_peer(event->connect.conn_handle);
+            if (target < 0) {
+                ESP_LOGW(TAG, "no free HID target; disconnecting extra host");
+                ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            } else {
+                ESP_LOGI(TAG, "HID host connected as target %d", target + 1);
+                ble_gap_security_initiate(event->connect.conn_handle);
+                advertise();
+            }
+        } else {
+            advertise();
+        }
         break;
-    case BLE_GAP_EVENT_DISCONNECT:
-        s_conn = BLE_HS_CONN_HANDLE_NONE;
-        s_directed_advertising = false;
-        ESP_LOGI(TAG, "HID host disconnected, reason=%d; starting reconnect advertising",
-                 event->disconnect.reason);
-        advertise_for_reconnect();
+    case BLE_GAP_EVENT_DISCONNECT: {
+        int target = target_for_handle(event->disconnect.conn.conn_handle);
+        if (target >= 0) {
+            taskENTER_CRITICAL(&s_peers_lock);
+            s_peers[target].connected = false;
+            s_peers[target].conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            taskEXIT_CRITICAL(&s_peers_lock);
+        }
+        ESP_LOGI(TAG, "HID target %d disconnected, reason=%d",
+                 target + 1, event->disconnect.reason);
+        advertise();
         break;
+    }
     case BLE_GAP_EVENT_SUBSCRIBE:
-        ESP_LOGI(TAG, "subscription handle=%u notify=%u",
+        ESP_LOGI(TAG, "target %d subscription handle=%u notify=%u",
+                 target_for_handle(event->subscribe.conn_handle) + 1,
                  event->subscribe.attr_handle, event->subscribe.cur_notify);
         break;
     case BLE_GAP_EVENT_ENC_CHANGE:
         if (event->enc_change.status == 0) {
-            remember_peer(event->enc_change.conn_handle);
-            ESP_LOGI(TAG, "secure link established; bond available for reconnect");
+            update_peer_identity(event->enc_change.conn_handle);
+            ESP_LOGI(TAG, "target %d secure link established",
+                     target_for_handle(event->enc_change.conn_handle) + 1);
         } else {
             ESP_LOGW(TAG, "link security failed: %d", event->enc_change.status);
         }
@@ -155,10 +296,6 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         return BLE_GAP_REPEAT_PAIRING_RETRY;
     }
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        if (s_directed_advertising) {
-            s_directed_advertising = false;
-            ESP_LOGI(TAG, "directed reconnect timed out; falling back to fast advertising");
-        }
         advertise();
         break;
     default:
@@ -169,7 +306,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
 static void advertise(void)
 {
-    if (ble_gap_adv_active()) return;
+    if (ble_gap_adv_active() || connected_count() >= APP_MAX_HID_DEVICES) return;
 
     struct ble_hs_adv_fields fields = {0};
     const ble_uuid16_t hid_uuid = BLE_UUID16_INIT(0x1812);
@@ -191,31 +328,8 @@ static void advertise(void)
     if (rc) {
         ESP_LOGE(TAG, "advertise failed: %d", rc);
     } else {
-        ESP_LOGI(TAG, "fast connectable advertising started");
-    }
-}
-
-static void advertise_for_reconnect(void)
-{
-    if (!s_have_last_peer || ble_gap_adv_active()) {
-        advertise();
-        return;
-    }
-
-    struct ble_gap_adv_params p = {
-        .conn_mode = BLE_GAP_CONN_MODE_DIR,
-        .disc_mode = BLE_GAP_DISC_MODE_NON,
-        .high_duty_cycle = 1
-    };
-    s_directed_advertising = true;
-    int rc = ble_gap_adv_start(s_own_addr_type, &s_last_peer, BLE_HS_FOREVER,
-                               &p, gap_event, NULL);
-    if (rc) {
-        s_directed_advertising = false;
-        ESP_LOGW(TAG, "directed reconnect advertising failed: %d", rc);
-        advertise();
-    } else {
-        ESP_LOGI(TAG, "directed reconnect advertising started");
+        ESP_LOGI(TAG, "connectable advertising started (%u/%u targets connected)",
+                 connected_count(), APP_MAX_HID_DEVICES);
     }
 }
 
@@ -238,6 +352,10 @@ static void host_task(void *param)
 
 esp_err_t ble_hid_init(void)
 {
+    for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i)
+        s_peers[i].conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    load_peers();
+
     int rc = nimble_port_init();
     if (rc) return ESP_FAIL;
     ble_svc_gap_init();
@@ -259,27 +377,45 @@ esp_err_t ble_hid_init(void)
     return ESP_OK;
 }
 
-bool ble_hid_connected(void) { return s_conn != BLE_HS_CONN_HANDLE_NONE; }
-
-static void notify(uint16_t handle, const void *data, uint16_t len)
+bool ble_hid_connected(size_t target)
 {
-    if (!ble_hid_connected()) return;
+    if (target >= APP_MAX_HID_DEVICES) return false;
+    bool connected;
+    taskENTER_CRITICAL(&s_peers_lock);
+    connected = s_peers[target].connected;
+    taskEXIT_CRITICAL(&s_peers_lock);
+    return connected;
+}
+
+static void notify(size_t target, uint16_t handle, const void *data, uint16_t len)
+{
+    if (target >= APP_MAX_HID_DEVICES) return;
+    uint16_t conn_handle;
+    taskENTER_CRITICAL(&s_peers_lock);
+    conn_handle = s_peers[target].connected
+        ? s_peers[target].conn_handle : BLE_HS_CONN_HANDLE_NONE;
+    taskEXIT_CRITICAL(&s_peers_lock);
+    if (conn_handle == BLE_HS_CONN_HANDLE_NONE) return;
+
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
     if (om) {
-        int rc = ble_gatts_notify_custom(s_conn, handle, om);
-        if (rc != 0) ESP_LOGW(TAG, "notification failed handle=%u rc=%d", handle, rc);
+        int rc = ble_gatts_notify_custom(conn_handle, handle, om);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "target %u notification failed handle=%u rc=%d",
+                     (unsigned)target + 1, handle, rc);
+        }
     }
 }
 
-void ble_hid_keyboard(uint8_t modifiers, const uint8_t keys[6])
+void ble_hid_keyboard(size_t target, uint8_t modifiers, const uint8_t keys[6])
 {
     uint8_t report[8] = {modifiers, 0};
     memcpy(report + 2, keys, 6);
-    notify(s_keyboard_handle, report, sizeof(report));
+    notify(target, s_keyboard_handle, report, sizeof(report));
 }
 
-void ble_hid_mouse(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel)
+void ble_hid_mouse(size_t target, uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel)
 {
     const uint8_t report[4] = {buttons, (uint8_t)dx, (uint8_t)dy, (uint8_t)wheel};
-    notify(s_mouse_handle, report, sizeof(report));
+    notify(target, s_mouse_handle, report, sizeof(report));
 }

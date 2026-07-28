@@ -1,19 +1,20 @@
 # Deskflow Wi-Fi → ESP32-S3 NimBLE HID
 
-ESP32-S3 connects to Wi-Fi, accepts a Deskflow/Synergy-compatible TCP connection,
-and forwards keyboard/mouse events to a paired computer, tablet, or phone over
-Bluetooth LE HID.
+ESP32-S3 connects to Wi-Fi, opens multiple Deskflow/Synergy-compatible TCP
+client sessions, and forwards each screen's keyboard/mouse events to its
+corresponding paired computer, tablet, or phone over Bluetooth LE HID.
 
 ## Defaults
 
 在 [app_config.h](main\app_config.h) 中配置.
 
-- Wi-Fi SSID: `GL-MT300N-V2-03d`
-- Wi-Fi password: `goodlife`
-- Deskflow server: `192.168.41.83:24800`
-- Deskflow client screen name: `esp32-hid`
+- Wi-Fi SSID: `309_MeetingRoom`
+- Wi-Fi password: `bestlink309`
+- Deskflow server: `172.30.124.109:24800`
+- Deskflow client screens: `esp32-hid-1`, `esp32-hid-2`, `esp32-hid-3`
 - Advertised virtual screen size: `1920x1080`
 - Bluetooth name: `Deskflow ESP32 HID`
+- Maximum simultaneous HID hosts: `3`
 
 Change these values in `main/app_config.h`.
 
@@ -28,14 +29,22 @@ idf.py -p PORT flash monitor
 ```
 
 Set `APP_DESKFLOW_SERVER_IP` in `main/app_config.h` to the Deskflow server's
-LAN address. Pair `Deskflow ESP32 HID` from the destination device's Bluetooth
-settings, then add a Deskflow screen named `esp32-hid`. The ESP32 reconnects to
-the server automatically.
+LAN address. Add all numbered screens to the Deskflow Server layout, then pair
+`Deskflow ESP32 HID` from each destination device's Bluetooth settings. The
+first paired host maps to screen 1, the second to screen 2, and the third to
+screen 3:
 
-BLE bonding keys are persisted in NVS. After a HID host goes out of range, the
-ESP32 first uses directed reconnect advertising and then falls back to fast
-connectable advertising. The phone or tablet must keep Bluetooth enabled and
-retain the device in its paired-device list.
+```text
+esp32-hid-1 -> first BLE host
+esp32-hid-2 -> second BLE host
+esp32-hid-3 -> third BLE host
+```
+
+The screen-to-peer address mapping and BLE bonding keys are persisted in NVS.
+The ESP32 continues fast connectable advertising until all three slots are
+connected, and resumes advertising whenever any target disconnects. The phone
+or tablet must keep Bluetooth enabled and retain the device in its paired-device
+list.
 
 ## Implemented protocol subset
 
