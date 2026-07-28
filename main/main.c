@@ -1,4 +1,6 @@
+#include "app_settings.h"
 #include "ble_hid.h"
+#include "config_server.h"
 #include "deskflow.h"
 #include "wifi.h"
 
@@ -16,8 +18,10 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
+    ESP_ERROR_CHECK(app_settings_init());
     ESP_ERROR_CHECK(ble_hid_init());
     ESP_ERROR_CHECK(wifi_start());
+    ESP_ERROR_CHECK(config_server_start());
     ESP_ERROR_CHECK(deskflow_start());
     ESP_LOGI(TAG, "Deskflow Wi-Fi to NimBLE HID bridge started");
 }

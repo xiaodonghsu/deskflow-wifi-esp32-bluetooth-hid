@@ -1,5 +1,6 @@
 #include "deskflow.h"
 #include "app_config.h"
+#include "app_settings.h"
 #include "ble_hid.h"
 #include "wifi.h"
 
@@ -21,6 +22,8 @@ typedef struct {
     size_t target;
     char screen_name[32];
     char task_name[16];
+    uint16_t screen_width;
+    uint16_t screen_height;
     uint8_t modifiers;
     uint8_t keys[6];
     uint8_t buttons;
@@ -85,6 +88,18 @@ static uint8_t hid_modifiers(uint16_t deskflow_mask)
     return m;
 }
 
+static uint8_t hid_mouse_button_mask(uint8_t deskflow_button)
+{
+    switch (deskflow_button) {
+    case 1: return 0x01; /* primary/left */
+    case 2: return 0x04; /* middle */
+    case 3: return 0x02; /* secondary/right */
+    case 4: return 0x08; /* back/extra 1 */
+    case 5: return 0x10; /* forward/extra 2 */
+    default: return 0;
+    }
+}
+
 static void key_event(deskflow_client_t *client, uint16_t key, uint16_t mask, bool down)
 {
     uint8_t code = hid_key(key);
@@ -128,19 +143,19 @@ static void put_be16(uint8_t *p, int16_t value)
 
 static bool send_frame(int fd, const void *data, uint32_t len);
 
-static void send_screen_info(int fd)
+static void send_screen_info(deskflow_client_t *client, int fd)
 {
     uint8_t info[18] = {'D', 'I', 'N', 'F'};
     const int16_t values[7] = {
         0, 0,
-        APP_DESKFLOW_SCREEN_WIDTH, APP_DESKFLOW_SCREEN_HEIGHT,
+        (int16_t)client->screen_width, (int16_t)client->screen_height,
         0,
-        APP_DESKFLOW_SCREEN_WIDTH / 2, APP_DESKFLOW_SCREEN_HEIGHT / 2
+        (int16_t)(client->screen_width / 2), (int16_t)(client->screen_height / 2)
     };
     for (int i = 0; i < 7; ++i) put_be16(info + 4 + i * 2, values[i]);
     if (send_frame(fd, info, sizeof(info))) {
         ESP_LOGI(TAG, "sent screen info %dx%d",
-                 APP_DESKFLOW_SCREEN_WIDTH, APP_DESKFLOW_SCREEN_HEIGHT);
+                 client->screen_width, client->screen_height);
     } else {
         ESP_LOGE(TAG, "failed to send screen info");
     }
@@ -150,7 +165,7 @@ static void parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
 {
     if (n < 4) return;
     if (!memcmp(p, "QINF", 4)) {
-        send_screen_info(fd);
+        send_screen_info(client, fd);
     } else if (!memcmp(p, "CALV", 4)) {
         send_frame(fd, "CALV", 4);
     } else if (!memcmp(p, "CINN", 4) && n >= 14) {
@@ -175,12 +190,16 @@ static void parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
         key_event(client, be16(p + 4), be16(p + 6), true);
         key_event(client, be16(p + 4), be16(p + 6), false);
     } else if (!memcmp(p, "DMDN", 4) && n >= 5) {
-        unsigned b = p[4];
-        if (b >= 1 && b <= 5) client->buttons |= 1u << (b - 1);
+        uint8_t button_mask = hid_mouse_button_mask(p[4]);
+        client->buttons |= button_mask;
+        ESP_LOGI(TAG, "[%s] mouse button down deskflow=%u hid_mask=0x%02x",
+                 client->screen_name, p[4], button_mask);
         ble_hid_mouse(client->target, client->buttons, 0, 0, 0);
     } else if (!memcmp(p, "DMUP", 4) && n >= 5) {
-        unsigned b = p[4];
-        if (b >= 1 && b <= 5) client->buttons &= ~(1u << (b - 1));
+        uint8_t button_mask = hid_mouse_button_mask(p[4]);
+        client->buttons &= (uint8_t)~button_mask;
+        ESP_LOGI(TAG, "[%s] mouse button up deskflow=%u hid_mask=0x%02x",
+                 client->screen_name, p[4], button_mask);
         ble_hid_mouse(client->target, client->buttons, 0, 0, 0);
     } else if (!memcmp(p, "DMRM", 4) && n >= 8) {
         mouse_move(client, (int16_t)be16(p + 4), (int16_t)be16(p + 6));
@@ -285,6 +304,7 @@ static void serve(deskflow_client_t *client, int fd)
 static void client_task(void *arg)
 {
     deskflow_client_t *client_ctx = arg;
+    const app_settings_t *settings = app_settings_get();
     while (true) {
         ble_hid_wait_connected(client_ctx->target);
         wifi_wait_connected();
@@ -292,12 +312,12 @@ static void client_task(void *arg)
 
         int client = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
         struct sockaddr_in addr = { .sin_family = AF_INET,
-            .sin_port = htons(APP_DESKFLOW_PORT) };
-        if (client < 0 || inet_pton(AF_INET, APP_DESKFLOW_SERVER_IP, &addr.sin_addr) != 1 ||
+            .sin_port = htons(settings->deskflow_port) };
+        if (client < 0 || inet_pton(AF_INET, settings->deskflow_host, &addr.sin_addr) != 1 ||
             connect(client, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
             ESP_LOGW(TAG, "[%s] connect to %s:%d failed: errno %d",
-                     client_ctx->screen_name, APP_DESKFLOW_SERVER_IP,
-                     APP_DESKFLOW_PORT, errno);
+                     client_ctx->screen_name, settings->deskflow_host,
+                     settings->deskflow_port, errno);
             if (client >= 0) close(client);
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
@@ -306,7 +326,8 @@ static void client_task(void *arg)
         setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
                    &receive_timeout, sizeof(receive_timeout));
         ESP_LOGI(TAG, "[%s] connected to Deskflow server %s:%d",
-                 client_ctx->screen_name, APP_DESKFLOW_SERVER_IP, APP_DESKFLOW_PORT);
+                 client_ctx->screen_name, settings->deskflow_host,
+                 settings->deskflow_port);
         serve(client_ctx, client);
         shutdown(client, SHUT_RDWR);
         close(client);
@@ -319,11 +340,14 @@ static void client_task(void *arg)
 
 esp_err_t deskflow_start(void)
 {
+    const app_settings_t *settings = app_settings_get();
     for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
         deskflow_client_t *client = &s_clients[i];
         client->target = i;
-        snprintf(client->screen_name, sizeof(client->screen_name), "%s%u",
-                 APP_DESKFLOW_SCREEN_NAME_PREFIX, (unsigned)i + 1);
+        strlcpy(client->screen_name, settings->hid[i].name,
+                sizeof(client->screen_name));
+        client->screen_width = settings->hid[i].width;
+        client->screen_height = settings->hid[i].height;
         snprintf(client->task_name, sizeof(client->task_name), "deskflow-%u",
                  (unsigned)i + 1);
         if (xTaskCreate(client_task, client->task_name, 6144, client, 5, NULL) != pdPASS)

@@ -1,5 +1,6 @@
 #include "ble_hid.h"
 #include "app_config.h"
+#include "app_settings.h"
 
 #include <string.h>
 #include "esp_log.h"
@@ -315,20 +316,31 @@ static void advertise(void)
     struct ble_hs_adv_fields fields = {0};
     const ble_uuid16_t hid_uuid = BLE_UUID16_INIT(0x1812);
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.name = (const uint8_t *)APP_BLE_DEVICE_NAME;
-    fields.name_len = strlen(APP_BLE_DEVICE_NAME);
-    fields.name_is_complete = 1;
     fields.uuids16 = (ble_uuid16_t *)&hid_uuid;
     fields.num_uuids16 = 1;
     fields.uuids16_is_complete = 1;
-    ble_gap_adv_set_fields(&fields);
+    int rc = ble_gap_adv_set_fields(&fields);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "set advertising fields failed: %d", rc);
+        return;
+    }
+    const char *device_name = app_settings_get()->ble_device_name;
+    struct ble_hs_adv_fields response = {0};
+    response.name = (const uint8_t *)device_name;
+    response.name_len = strlen(device_name);
+    response.name_is_complete = 1;
+    rc = ble_gap_adv_rsp_set_fields(&response);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "set scan response failed: %d", rc);
+        return;
+    }
     struct ble_gap_adv_params p = {
         .conn_mode = BLE_GAP_CONN_MODE_UND,
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
         .itvl_min = 0x20,
         .itvl_max = 0x30
     };
-    int rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
+    rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
     if (rc) {
         ESP_LOGE(TAG, "advertise failed: %d", rc);
     } else {
@@ -367,7 +379,7 @@ esp_err_t ble_hid_init(void)
     if (rc) return ESP_FAIL;
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    ble_svc_gap_device_name_set(APP_BLE_DEVICE_NAME);
+    ble_svc_gap_device_name_set(app_settings_get()->ble_device_name);
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
     ble_hs_cfg.sm_bonding = 1;

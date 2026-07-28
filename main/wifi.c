@@ -1,6 +1,8 @@
 #include "wifi.h"
 #include "app_config.h"
+#include "app_settings.h"
 
+#include <stdio.h>
 #include <string.h>
 #include "esp_event.h"
 #include "esp_log.h"
@@ -8,6 +10,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "lwip/ip4_addr.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -41,28 +44,56 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 esp_err_t wifi_start(void)
 {
+    const app_settings_t *settings = app_settings_get();
     s_wifi_events = xEventGroupCreate();
     if (!s_wifi_events) return ESP_ERR_NO_MEM;
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     if (!esp_netif_create_default_wifi_sta()) return ESP_FAIL;
+    esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+    if (!ap_netif) return ESP_FAIL;
+
+    esp_netif_ip_info_t ap_ip = {0};
+    IP4_ADDR(&ap_ip.ip, 192, 168, 1, 100);
+    IP4_ADDR(&ap_ip.gw, 192, 168, 1, 100);
+    IP4_ADDR(&ap_ip.netmask, 255, 255, 255, 0);
+    esp_netif_dhcps_stop(ap_netif);
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(ap_netif, &ap_ip));
+    ESP_ERROR_CHECK(esp_netif_dhcps_start(ap_netif));
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL));
 
-    wifi_config_t config = {0};
-    strlcpy((char *)config.sta.ssid, APP_WIFI_SSID, sizeof(config.sta.ssid));
-    strlcpy((char *)config.sta.password, APP_WIFI_PASSWORD, sizeof(config.sta.password));
-    config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-    config.sta.pmf_cfg.capable = true;
-    config.sta.pmf_cfg.required = false;
+    wifi_config_t sta_config = {0};
+    strlcpy((char *)sta_config.sta.ssid, settings->wifi_ssid,
+            sizeof(sta_config.sta.ssid));
+    strlcpy((char *)sta_config.sta.password, settings->wifi_password,
+            sizeof(sta_config.sta.password));
+    sta_config.sta.threshold.authmode = settings->wifi_password[0]
+        ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    sta_config.sta.pmf_cfg.capable = true;
+    sta_config.sta.pmf_cfg.required = false;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
+    wifi_config_t ap_config = {0};
+    strlcpy((char *)ap_config.ap.ssid, settings->softap_ssid,
+            sizeof(ap_config.ap.ssid));
+    strlcpy((char *)ap_config.ap.password, settings->softap_password,
+            sizeof(ap_config.ap.password));
+    ap_config.ap.ssid_len = strlen(settings->softap_ssid);
+    ap_config.ap.channel = 1;
+    ap_config.ap.max_connection = 4;
+    ap_config.ap.authmode = settings->softap_password[0]
+        ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(TAG, "configuration AP \"%s\" at 192.168.1.100",
+             settings->softap_ssid);
     return ESP_OK;
 }
 

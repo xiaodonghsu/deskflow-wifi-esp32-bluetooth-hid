@@ -15,5 +15,5 @@
     "--compile-commands-dir=c:\\Files\\Documents\\Projects\\playground-iot\\esp32\\deskflow-wifi-esp32-hid\\build"
   ],
   "idf.flashType": "UART",
-  "idf.portWin": "COM8"
+  "idf.portWin": "COM7"
 }

@@ -9,15 +9,40 @@ tablet, or phone.
 
 在 [app_config.h](main\app_config.h) 中配置.
 
-- Wi-Fi SSID: `309_MeetingRoom`
-- Wi-Fi password: `bestlink309`
-- Deskflow server: `172.30.124.109:24800`
+- Wi-Fi SSID: `GL-MT300N-V2-03d`
+- Wi-Fi password: `goodlife`
+- Deskflow server: `192.168.41.83:24800`
+- Configuration SoftAP: `esp32-hid-config` (no password)
 - Deskflow client screens: `esp32-hid-1`, `esp32-hid-2`, `esp32-hid-3`
 - Advertised virtual screen size: `1920x1080`
 - Bluetooth name: `Deskflow ESP32 HID`
 - Maximum simultaneous HID hosts: `3`
 
 Change these values in `main/app_config.h`.
+
+## Wi-Fi configuration portal
+
+At boot the ESP32 runs a SoftAP alongside its normal Wi-Fi station connection.
+The default SoftAP is:
+
+```text
+esp32-hid-config
+```
+
+Connect to that network and open the configuration page:
+
+```text
+http://192.168.1.100/
+```
+
+The page contains communication settings (Wi-Fi credentials, Deskflow server
+IPv4 address and port, SoftAP credentials, and BLE device name) plus an
+individual Deskflow screen name, width, and height for every HID slot. Press
+**Save and restart device** to validate and persist the form in NVS. Saved
+values override the compile-time defaults in `main/app_config.h`.
+
+The SoftAP password is optional. If it is non-empty it must contain 8–63
+characters; leaving it empty creates an open configuration network.
 
 ## Build and flash
 
@@ -29,11 +54,15 @@ idf.py build
 idf.py -p PORT flash monitor
 ```
 
-Set `APP_DESKFLOW_SERVER_IP` in `main/app_config.h` to the Deskflow server's
-LAN address. Add all numbered screens to the Deskflow Server layout, then pair
-`Deskflow ESP32 HID` from each destination device's Bluetooth settings. The
-first paired host maps to screen 1, the second to screen 2, and the third to
-screen 3:
+The project uses ESP-IDF's 1.5 MiB single-factory-app partition table. OTA
+slots are not enabled; NVS remains available for Wi-Fi parameters, BLE bonds,
+and HID target mappings.
+
+Set compile-time defaults in `main/app_config.h`, or change them on the
+configuration page. Add the configured HID screen names to the Deskflow Server
+layout, then pair the configured BLE device name from each destination device's
+Bluetooth settings. The first paired host maps to HID slot 1, the second to
+slot 2, and the third to slot 3:
 
 ```text
 esp32-hid-1 -> first BLE host
@@ -65,7 +94,3 @@ also supported.
 Clipboard, drag-and-drop, horizontal scrolling, dead keys, Unicode text input,
 and consumer/media keys are not currently forwarded. Keyboard mapping covers
 ASCII letters/numbers, common controls, navigation keys, and modifier masks.
-
-## future feature
-
-考虑同时支持多个HID设备
