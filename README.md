@@ -6,6 +6,8 @@ Bluetooth LE HID.
 
 ## Defaults
 
+在 [app_config.h](main\app_config.h) 中配置.
+
 - Wi-Fi SSID: `GL-MT300N-V2-03d`
 - Wi-Fi password: `goodlife`
 - Deskflow server: `192.168.41.83:24800`
@@ -17,7 +19,7 @@ Change these values in `main/app_config.h`.
 
 ## Build and flash
 
-Requires ESP-IDF 5.x:
+Requires ESP-IDF 6.x:
 
 ```sh
 idf.py set-target esp32s3
@@ -47,3 +49,7 @@ also supported.
 Clipboard, drag-and-drop, horizontal scrolling, dead keys, Unicode text input,
 and consumer/media keys are not currently forwarded. Keyboard mapping covers
 ASCII letters/numbers, common controls, navigation keys, and modifier masks.
+
+## future feature
+
+考虑同时支持多个HID设备
