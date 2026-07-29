@@ -52,7 +52,7 @@ esp32-hid-config
 http://192.168.1.100/
 ```
 
-![配置页面](docs\images\config-page.png)
+![配置页面](docs/images/config-page.png)
 
 页面包含通信设置（Wi-Fi 凭据、Deskflow 服务器的 IPv4 地址和端口、SoftAP 凭据以及 BLE 设备名称），以及每个 HID 槽位单独的 Deskflow 屏幕名称、宽度和高度。点击 **保存并重启设备** 来验证并将表单持久化到 NVS 中。已保存的值将覆盖 `main/app_config.h` 中的编译时默认值。
 
