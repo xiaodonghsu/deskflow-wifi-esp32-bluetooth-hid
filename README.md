@@ -11,7 +11,7 @@ ESP32-S3 以 STA 或 SoftAP 的方式与 deskflow 服务机建立连接，模拟
 ## 适用场景
 
 <div align="center">
-  <img src="docs\images\describe.png" width="800" alt="Deskflow-Wifi-ESP32-HID">
+  <img src="docs/images/describe.png" width="800" alt="Deskflow-Wifi-ESP32-HID">
 </div>
 
 ## 已知问题
@@ -25,7 +25,7 @@ ESP32-S3 以 STA 或 SoftAP 的方式与 deskflow 服务机建立连接，模拟
 
 ## 默认配置
 
-在 [app_config.h](main\app_config.h) 中配置。
+在 [app_config.h](main/app_config.h) 中配置。
 
 - Wi-Fi SSID：`GL-MT300N-V2-03d`
 - Wi-Fi 密码：`goodlife`
