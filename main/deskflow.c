@@ -161,9 +161,9 @@ static void send_screen_info(deskflow_client_t *client, int fd)
     }
 }
 
-static void parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, size_t n)
+static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, size_t n)
 {
-    if (n < 4) return;
+    if (n < 4) return false;
     if (!memcmp(p, "QINF", 4)) {
         send_screen_info(client, fd);
     } else if (!memcmp(p, "CALV", 4)) {
@@ -222,7 +222,10 @@ static void parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
         client->have_position = false;
         ble_hid_keyboard(client->target, 0, client->keys);
         ble_hid_mouse(client->target, 0, 0, 0, 0);
+    } else {
+        return false;
     }
+    return true;
 }
 
 static bool recv_all(deskflow_client_t *client, int fd, void *buf, size_t len)
@@ -296,7 +299,21 @@ static void serve(deskflow_client_t *client, int fd)
                 break;
             }
         } else {
-            parse_frame(client, fd, frame, len);
+            if (parse_frame(client, fd, frame, len)) {
+                /*
+                 * Match the official Deskflow client: send a no-op after each
+                 * handled server message so the TCP ACK can be returned
+                 * immediately instead of waiting for a delayed-ACK timer.
+                 */
+                if (!send_frame(fd, "CNOP", 4)) {
+                    ESP_LOGW(TAG, "[%s] failed to send CNOP",
+                             client->screen_name);
+                    break;
+                }
+            } else {
+                ESP_LOGW(TAG, "[%s] unsupported Deskflow frame %.4s",
+                         client->screen_name, (const char *)frame);
+            }
         }
     }
 }
@@ -321,6 +338,12 @@ static void client_task(void *arg)
             if (client >= 0) close(client);
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
+        }
+        int no_delay = 1;
+        if (setsockopt(client, IPPROTO_TCP, TCP_NODELAY,
+                       &no_delay, sizeof(no_delay)) != 0) {
+            ESP_LOGW(TAG, "[%s] failed to enable TCP_NODELAY: errno %d",
+                     client_ctx->screen_name, errno);
         }
         struct timeval receive_timeout = { .tv_sec = 1, .tv_usec = 0 };
         setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,

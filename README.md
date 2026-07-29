@@ -89,7 +89,9 @@ handles keyboard down/up/repeat, absolute and relative pointer motion, mouse
 buttons, vertical wheel, screen enter/leave, screen-information queries,
 keep-alives, and the `Barrier` or `Synergy` handshake prefixes selected by
 Deskflow Server. Protocol 1.8 language-aware keyboard-down (`DKDL`) frames are
-also supported.
+also supported. After each handled server message, the client sends a `CNOP`
+reply with `TCP_NODELAY` enabled to avoid interactive latency from delayed TCP
+acknowledgments.
 
 Clipboard, drag-and-drop, horizontal scrolling, dead keys, Unicode text input,
 and consumer/media keys are not currently forwarded. Keyboard mapping covers
