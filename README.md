@@ -1,5 +1,7 @@
 # Deskflow Wi-Fi → ESP32-S3 NimBLE HID
 
+[中文](README_CN.md)
+
 ESP32-S3 connects to Wi-Fi and opens a numbered Deskflow/Synergy-compatible TCP
 client session only when the corresponding Bluetooth HID host is connected.
 Each screen's keyboard/mouse events are forwarded to its paired computer,
