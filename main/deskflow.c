@@ -272,16 +272,63 @@ static bool send_frame(int fd, const void *data, uint32_t len)
     return send_all(fd, packet, len + 4);
 }
 
+/*
+ * Input events are small, but optional protocol messages such as clipboard
+ * data can be several kilobytes or more.  Consume oversized frames instead of
+ * closing the connection, which would otherwise turn normal clipboard
+ * synchronization into a reconnect loop.
+ */
+static bool discard_frame(deskflow_client_t *client, int fd, uint32_t len)
+{
+    uint8_t chunk[256];
+    char command[5] = "????";
+    size_t command_len = len < 4 ? len : 4;
+    if (command_len && !recv_all(client, fd, command, command_len))
+        return false;
+    command[command_len] = '\0';
+    len -= command_len;
+
+    while (len) {
+        size_t amount = len < sizeof(chunk) ? len : sizeof(chunk);
+        if (!recv_all(client, fd, chunk, amount)) return false;
+        len -= amount;
+    }
+    ESP_LOGI(TAG, "[%s] ignored large Deskflow frame %.4s",
+             client->screen_name, command);
+    return true;
+}
+
+static bool optional_frame(const uint8_t *frame, size_t len)
+{
+    if (len < 4) return false;
+    static const char commands[][5] = {
+        "DCLP", /* Clipboard data is intentionally not forwarded to HID. */
+        "LSYN", /* Lock-state synchronization. */
+        "CIAK", /* Screen-info acknowledgement. */
+        "CROP", /* Reset options. */
+        "DSOP", /* Set options. */
+    };
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i)
+        if (memcmp(frame, commands[i], 4) == 0) return true;
+    return false;
+}
+
 static void serve(deskflow_client_t *client, int fd)
 {
+    /* Large enough for normal protocol data while rejecting corrupt lengths. */
+    static const uint32_t max_frame_size = 16 * 1024 * 1024;
     uint8_t frame[1024];
     while (ble_hid_connected(client->target)) {
         uint32_t net_len;
         if (!recv_all(client, fd, &net_len, sizeof(net_len))) break;
         uint32_t len = ntohl(net_len);
-        if (!len || len > sizeof(frame)) {
+        if (!len || len > max_frame_size) {
             ESP_LOGW(TAG, "invalid frame size: %" PRIu32, len);
             break;
+        }
+        if (len > sizeof(frame)) {
+            if (!discard_frame(client, fd, len)) break;
+            continue;
         }
         if (!recv_all(client, fd, frame, len)) break;
         if (len >= 11 && (!memcmp(frame, "Synergy", 7) || !memcmp(frame, "Barrier", 7))) {
@@ -316,8 +363,12 @@ static void serve(deskflow_client_t *client, int fd)
                     break;
                 }
             } else {
-                ESP_LOGW(TAG, "[%s] unsupported Deskflow frame %.4s",
-                         client->screen_name, (const char *)frame);
+                if (optional_frame(frame, len))
+                    ESP_LOGD(TAG, "[%s] ignored optional Deskflow frame %.4s",
+                             client->screen_name, (const char *)frame);
+                else
+                    ESP_LOGW(TAG, "[%s] unsupported Deskflow frame %.4s",
+                             client->screen_name, (const char *)frame);
             }
         }
     }
