@@ -23,5 +23,5 @@ void app_main(void)
     ESP_ERROR_CHECK(wifi_start());
     ESP_ERROR_CHECK(config_server_start());
     ESP_ERROR_CHECK(deskflow_start());
-    ESP_LOGI(TAG, "Deskflow Wi-Fi to NimBLE HID bridge started");
+    ESP_LOGI(TAG, "Deskflow USB/Wi-Fi to NimBLE HID bridge started");
 }

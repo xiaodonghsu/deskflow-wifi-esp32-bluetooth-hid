@@ -18,6 +18,8 @@ static void set_defaults(void)
     strlcpy(s_settings.softap_ssid, APP_SOFTAP_SSID, sizeof(s_settings.softap_ssid));
     strlcpy(s_settings.softap_password, APP_SOFTAP_PASSWORD,
             sizeof(s_settings.softap_password));
+    strlcpy(s_settings.usb_dhcp_server_ip, APP_USB_DHCP_SERVER_IP,
+            sizeof(s_settings.usb_dhcp_server_ip));
     strlcpy(s_settings.ble_device_name, APP_BLE_DEVICE_NAME,
             sizeof(s_settings.ble_device_name));
     strlcpy(s_settings.hid[0].name, APP_HID_1_NAME, sizeof(s_settings.hid[0].name));
@@ -52,6 +54,8 @@ esp_err_t app_settings_init(void)
     get_string(nvs, "host", s_settings.deskflow_host, sizeof(s_settings.deskflow_host));
     get_string(nvs, "ap_ssid", s_settings.softap_ssid, sizeof(s_settings.softap_ssid));
     get_string(nvs, "ap_pass", s_settings.softap_password, sizeof(s_settings.softap_password));
+    get_string(nvs, "usb_dhcp_ip", s_settings.usb_dhcp_server_ip,
+               sizeof(s_settings.usb_dhcp_server_ip));
     get_string(nvs, "ble_name", s_settings.ble_device_name, sizeof(s_settings.ble_device_name));
     uint16_t port;
     if (nvs_get_u16(nvs, "port", &port) == ESP_OK && port != 0)
@@ -100,6 +104,8 @@ esp_err_t app_settings_save(const app_settings_t *settings)
     if (err == ESP_OK) err = nvs_set_u16(nvs, "port", settings->deskflow_port);
     if (err == ESP_OK) err = nvs_set_str(nvs, "ap_ssid", settings->softap_ssid);
     if (err == ESP_OK) err = nvs_set_str(nvs, "ap_pass", settings->softap_password);
+    if (err == ESP_OK) err = nvs_set_str(nvs, "usb_dhcp_ip",
+                                         settings->usb_dhcp_server_ip);
     if (err == ESP_OK) err = nvs_set_str(nvs, "ble_name", settings->ble_device_name);
     for (size_t i = 0; err == ESP_OK && i < APP_MAX_HID_DEVICES; ++i) {
         char key[8];

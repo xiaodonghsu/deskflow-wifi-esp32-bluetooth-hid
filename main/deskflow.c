@@ -2,6 +2,7 @@
 #include "app_config.h"
 #include "app_settings.h"
 #include "ble_hid.h"
+#include "usb_network.h"
 #include "wifi.h"
 
 #include <errno.h>
@@ -30,6 +31,7 @@ typedef struct {
     int16_t last_x;
     int16_t last_y;
     bool have_position;
+    bool using_usb;
 } deskflow_client_t;
 
 static deskflow_client_t s_clients[APP_MAX_HID_DEVICES];
@@ -236,7 +238,10 @@ static bool recv_all(deskflow_client_t *client, int fd, void *buf, size_t len)
         if (got == 0) return false;
         if (got < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                if (ble_hid_connected(client->target)) continue;
+                bool network_available = client->using_usb
+                    ? usb_network_attached() : wifi_connected();
+                if (ble_hid_connected(client->target) &&
+                    network_available) continue;
             }
             return false;
         }
@@ -318,27 +323,60 @@ static void serve(deskflow_client_t *client, int fd)
     }
 }
 
+static int connect_server(const char *host, uint16_t port)
+{
+    int client = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (client < 0) return -1;
+
+    struct timeval connect_timeout = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO,
+               &connect_timeout, sizeof(connect_timeout));
+    struct sockaddr_in address = {
+        .sin_family = AF_INET,
+        .sin_port = htons(port),
+    };
+    if (inet_pton(AF_INET, host, &address.sin_addr) != 1 ||
+        connect(client, (struct sockaddr *)&address, sizeof(address)) != 0) {
+        close(client);
+        return -1;
+    }
+    return client;
+}
+
 static void client_task(void *arg)
 {
     deskflow_client_t *client_ctx = arg;
     const app_settings_t *settings = app_settings_get();
     while (true) {
         ble_hid_wait_connected(client_ctx->target);
-        wifi_wait_connected();
         if (!ble_hid_connected(client_ctx->target)) continue;
 
-        int client = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-        struct sockaddr_in addr = { .sin_family = AF_INET,
-            .sin_port = htons(settings->deskflow_port) };
-        if (client < 0 || inet_pton(AF_INET, settings->deskflow_host, &addr.sin_addr) != 1 ||
-            connect(client, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-            ESP_LOGW(TAG, "[%s] connect to %s:%d failed: errno %d",
-                     client_ctx->screen_name, settings->deskflow_host,
-                     settings->deskflow_port, errno);
-            if (client >= 0) close(client);
+        char selected_host[16];
+        const char *link_name = "Wi-Fi STA";
+        int client = -1;
+        if (usb_network_attached() &&
+            usb_network_peer_ip(selected_host, sizeof(selected_host)) == ESP_OK) {
+            link_name = "USB NCM";
+            client = connect_server(selected_host, settings->deskflow_port);
+            if (client < 0) {
+                ESP_LOGW(TAG, "[%s] USB server %s:%d unavailable; trying STA",
+                         client_ctx->screen_name, selected_host,
+                         settings->deskflow_port);
+            }
+        }
+        if (client < 0 && wifi_connected()) {
+            strlcpy(selected_host, settings->deskflow_host,
+                    sizeof(selected_host));
+            link_name = "Wi-Fi STA";
+            client = connect_server(selected_host, settings->deskflow_port);
+        }
+        if (client < 0) {
+            ESP_LOGW(TAG, "[%s] no Deskflow server reachable",
+                     client_ctx->screen_name);
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
         }
+        client_ctx->using_usb = strcmp(link_name, "USB NCM") == 0;
         int no_delay = 1;
         if (setsockopt(client, IPPROTO_TCP, TCP_NODELAY,
                        &no_delay, sizeof(no_delay)) != 0) {
@@ -348,9 +386,9 @@ static void client_task(void *arg)
         struct timeval receive_timeout = { .tv_sec = 1, .tv_usec = 0 };
         setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
                    &receive_timeout, sizeof(receive_timeout));
-        ESP_LOGI(TAG, "[%s] connected to Deskflow server %s:%d",
-                 client_ctx->screen_name, settings->deskflow_host,
-                 settings->deskflow_port);
+        ESP_LOGI(TAG, "[%s] connected to Deskflow server %s:%d via %s",
+                 client_ctx->screen_name, selected_host,
+                 settings->deskflow_port, link_name);
         serve(client_ctx, client);
         shutdown(client, SHUT_RDWR);
         close(client);

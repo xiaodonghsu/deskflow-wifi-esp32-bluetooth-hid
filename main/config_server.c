@@ -119,7 +119,7 @@ static esp_err_t root_handler(httpd_req_t *req)
                                settings->wifi_ssid, "required maxlength=\"32\""));
     HTTP_RETURN_ON_ERROR(send_input(req, "Wi-Fi 密码", "wifi_password", "password",
                                settings->wifi_password, "maxlength=\"63\""));
-    HTTP_RETURN_ON_ERROR(send_input(req, "Deskflow Server IP", "deskflow_host", "text",
+    HTTP_RETURN_ON_ERROR(send_input(req, "Deskflow Server IP（STA 备用）", "deskflow_host", "text",
                                settings->deskflow_host, "required inputmode=\"decimal\""));
     char port[8];
     snprintf(port, sizeof(port), "%u", settings->deskflow_port);
@@ -129,6 +129,10 @@ static esp_err_t root_handler(httpd_req_t *req)
                                settings->softap_ssid, "required maxlength=\"32\""));
     HTTP_RETURN_ON_ERROR(send_input(req, "SoftAP 密码（可选）", "softap_password", "password",
                                settings->softap_password, "maxlength=\"63\""));
+    HTTP_RETURN_ON_ERROR(send_input(req, "USB/SoftAP DHCP Server IP",
+                               "usb_dhcp_server_ip", "text",
+                               settings->usb_dhcp_server_ip,
+                               "required inputmode=\"decimal\""));
     HTTP_RETURN_ON_ERROR(send_input(req, "BLE 设备名称", "ble_device_name", "text",
                                settings->ble_device_name,
                                "required maxlength=\"29\" class=\"wide\""));
@@ -158,10 +162,15 @@ static esp_err_t root_handler(httpd_req_t *req)
                                    "required min=\"1\" max=\"32767\""));
         HTTP_RETURN_ON_ERROR(httpd_resp_send_chunk(req, "</div></div>", HTTPD_RESP_USE_STRLEN));
     }
-    HTTP_RETURN_ON_ERROR(httpd_resp_send_chunk(req,
+    char footer[320];
+    int footer_len = snprintf(footer, sizeof(footer),
         "</section><button type=\"submit\">保存并重启设备</button></form>"
-        "<p class=\"hint\">配置保存在 NVS 中。SoftAP 地址固定为 192.168.1.100。</p>"
-        "</body></html>", HTTPD_RESP_USE_STRLEN));
+        "<p class=\"hint\">配置保存在 NVS 中。配置页面地址为 "
+        "<code>http://%s/</code>；USB Deskflow 地址自动使用 DHCP Server IP + 1。</p>"
+        "</body></html>", settings->usb_dhcp_server_ip);
+    if (footer_len < 0 || (size_t)footer_len >= sizeof(footer))
+        return ESP_FAIL;
+    HTTP_RETURN_ON_ERROR(httpd_resp_send_chunk(req, footer, footer_len));
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
@@ -230,6 +239,8 @@ static esp_err_t save_handler(httpd_req_t *req)
         form_value(form, "deskflow_port", port, sizeof(port)) != ESP_OK ||
         form_value(form, "softap_ssid", settings.softap_ssid, sizeof(settings.softap_ssid)) != ESP_OK ||
         form_value(form, "softap_password", settings.softap_password, sizeof(settings.softap_password)) != ESP_OK ||
+        form_value(form, "usb_dhcp_server_ip", settings.usb_dhcp_server_ip,
+                   sizeof(settings.usb_dhcp_server_ip)) != ESP_OK ||
         form_value(form, "ble_device_name", settings.ble_device_name, sizeof(settings.ble_device_name)) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing or oversized communication field");
         return ESP_OK;
@@ -250,12 +261,18 @@ static esp_err_t save_handler(httpd_req_t *req)
     }
 
     struct in_addr host_addr;
+    struct in_addr dhcp_addr;
+    bool valid_dhcp_ip =
+        inet_pton(AF_INET, settings.usb_dhcp_server_ip, &dhcp_addr) == 1 &&
+        (ntohl(dhcp_addr.s_addr) & 0xff) >= 1 &&
+        (ntohl(dhcp_addr.s_addr) & 0xff) <= 249;
     if (!valid_text(settings.wifi_ssid) ||
         !valid_password(settings.wifi_password) ||
         inet_pton(AF_INET, settings.deskflow_host, &host_addr) != 1 ||
         !parse_u16(port, 1, 65535, &settings.deskflow_port) ||
         !valid_text(settings.softap_ssid) ||
         !valid_password(settings.softap_password) ||
+        !valid_dhcp_ip ||
         !valid_text(settings.ble_device_name)) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid communication settings");
         return ESP_OK;
@@ -279,13 +296,20 @@ static esp_err_t save_handler(httpd_req_t *req)
     }
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_sendstr(req,
+    char response[640];
+    int response_len = snprintf(response, sizeof(response),
         "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         "<title>配置已保存</title></head><body style=\"font-family:system-ui;padding:32px\">"
         "<h1>配置已保存</h1><p>新参数已经写入 NVS，设备正在重新启动…</p>"
-        "<p>重启后请连接新的 SoftAP，然后访问 <code>http://192.168.1.100/</code>。</p>"
-        "</body></html>");
+        "<p>重启后请连接新的 SoftAP，然后访问 <code>http://%s/</code>。</p>"
+        "</body></html>", settings.usb_dhcp_server_ip);
+    if (response_len < 0 || (size_t)response_len >= sizeof(response)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "response generation failed");
+        return ESP_OK;
+    }
+    httpd_resp_send(req, response, response_len);
     ESP_LOGI(TAG, "new configuration saved; restarting");
     xTaskCreate(restart_task, "config_restart", 2048, NULL, 5, NULL);
     return ESP_OK;
@@ -316,6 +340,7 @@ esp_err_t config_server_start(void)
         httpd_stop(server);
         return err;
     }
-    ESP_LOGI(TAG, "configuration page: http://192.168.1.100/");
+    ESP_LOGI(TAG, "configuration page: http://%s/",
+             app_settings_get()->usb_dhcp_server_ip);
     return ESP_OK;
 }

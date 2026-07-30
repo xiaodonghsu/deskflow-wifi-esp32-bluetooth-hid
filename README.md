@@ -1,10 +1,10 @@
-# Deskflow ESP32-S3 Wi-Fi Client → NimBLE HID
+# Deskflow ESP32-S3 USB/Wi-Fi Client → NimBLE HID
 
 [Deskflow](https://github.com/deskflow/deskflow) 在 windows/mac/linux 的计算机之间表现出色，但无法支持 iPadOS / Android / HomonyOS 等移动平台。Deskflow-Wifi-ESP32-HID 通过将 ESP32S3 模拟为**多个**Deskflow客户端 + HID 键盘鼠标的方式将 Deskflow 的能力扩展到这些设备：
 
 - iOS 和 Android 出于安全原因，不允许后台应用拦截或模拟系统级的 HID（人机接口设备）事件。
 
-ESP32-S3 以 STA 或 SoftAP 的方式与 deskflow 服务机建立连接，模拟为**多个**Deskflow的客户端和HID设备。当平板/手机/电脑添加蓝牙 HID 设备时，Deskflow主机添加设备。每个屏幕的键盘/鼠标事件都会被转发到配对的电脑、平板或手机。
+ESP32-S3 优先通过 USB CDC-NCM、备用通过 Wi-Fi STA 与 Deskflow 服务机建立连接，模拟为**多个**Deskflow 客户端和 HID 设备。SoftAP 保留用于配置和备用接入。当平板/手机/电脑添加蓝牙 HID 设备时，Deskflow 主机添加设备。每个屏幕的键盘/鼠标事件都会被转发到配对的电脑、平板或手机。
 
 本项目不需要对 [Deskflow](https://github.com/deskflow/deskflow) 做任何修改。
 
@@ -16,7 +16,7 @@ ESP32-S3 以 STA 或 SoftAP 的方式与 deskflow 服务机建立连接，模拟
 
 ## 已知问题
 
-- 由于只支持2.4g wifi, 使用时卡顿，建议deskflow服务端wifi直接使用 STA 方式使用。
+- Wi-Fi 与 BLE 共用 2.4 GHz 射频时可能产生延迟，低延迟场景建议使用 USB-NCM。
 - 不支持 deskflow 的剪贴板功能。
 
 ## 开发板
@@ -31,6 +31,8 @@ ESP32-S3 以 STA 或 SoftAP 的方式与 deskflow 服务机建立连接，模拟
 - Wi-Fi 密码：`goodlife`
 - Deskflow 服务器：`192.168.41.83:24800`
 - 配置 SoftAP：`esp32-hid-config`（无密码）
+- USB/SoftAP DHCP Server：`192.168.100.1`
+- USB Deskflow 服务端：`192.168.100.2`（DHCP Server 地址 + 1）
 - Deskflow 客户端屏幕：`esp32-hid-1`、`esp32-hid-2`、`esp32-hid-3`
 - 虚拟屏幕尺寸：`1920x1080`
 - 蓝牙名称：`Deskflow ESP32 HID`
@@ -49,14 +51,29 @@ esp32-hid-config
 连接该网络并打开配置页面：
 
 ```text
-http://192.168.1.100/
+http://192.168.100.1/
 ```
 
 ![配置页面](docs/images/config-page.png)
 
-页面包含通信设置（Wi-Fi 凭据、Deskflow 服务器的 IPv4 地址和端口、SoftAP 凭据以及 BLE 设备名称），以及每个 HID 槽位单独的 Deskflow 屏幕名称、宽度和高度。点击 **保存并重启设备** 来验证并将表单持久化到 NVS 中。已保存的值将覆盖 `main/app_config.h` 中的编译时默认值。
+页面包含通信设置（Wi-Fi 凭据、STA 备用 Deskflow 服务器的 IPv4 地址和端口、SoftAP 凭据、USB/SoftAP DHCP Server 地址以及 BLE 设备名称），以及每个 HID 槽位单独的 Deskflow 屏幕名称、宽度和高度。点击 **保存并重启设备** 来验证并将表单持久化到 NVS 中。已保存的值将覆盖 `main/app_config.h` 中的编译时默认值。
 
 SoftAP 密码是可选的。如果非空，必须包含 8-63 个字符；留空则会创建一个开放的配置网络。
+
+## USB 与 Wi-Fi 链路
+
+ESP32-S3 的原生 USB-OTG 接口会枚举为 CDC-NCM 网卡。USB-NCM 与
+SoftAP 位于同一个 `255.255.255.0` 二层桥中，桥地址即配置页面中的
+DHCP Server 地址。租约从该地址的下一个地址开始；使用默认配置时，
+USB 电脑获得 `192.168.100.2`，随后连接 SoftAP 的终端依次获得后续地址。
+
+Deskflow 客户端优先连接 DHCP Server 地址 + 1 的 USB 电脑。USB 断开或
+该地址不可连接时，改用配置页面中的 Deskflow Server IP，通过 Wi-Fi STA
+重试。为了保证 USB 电脑取得第一个租约，请在 ESP32-S3 启动或复位前连接
+USB；USB-NCM 会先于 SoftAP 初始化。
+
+ESP32-S3 原生 USB 使用 GPIO19（D-）和 GPIO20（D+）。UART0 继续作为主要
+日志控制台，因为原生 USB-OTG 外设已用于 NCM。
 
 ## 构建与烧录
 

@@ -1,6 +1,7 @@
 #include "wifi.h"
 #include "app_config.h"
 #include "app_settings.h"
+#include "usb_network.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -10,7 +11,6 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
-#include "lwip/ip4_addr.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -51,16 +51,12 @@ esp_err_t wifi_start(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     if (!esp_netif_create_default_wifi_sta()) return ESP_FAIL;
-    esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+    esp_netif_inherent_config_t ap_base = ESP_NETIF_INHERENT_DEFAULT_WIFI_AP();
+    ap_base.flags = ESP_NETIF_FLAG_AUTOUP;
+    ap_base.ip_info = NULL;
+    esp_netif_t *ap_netif = esp_netif_create_wifi(WIFI_IF_AP, &ap_base);
     if (!ap_netif) return ESP_FAIL;
-
-    esp_netif_ip_info_t ap_ip = {0};
-    IP4_ADDR(&ap_ip.ip, 192, 168, 1, 100);
-    IP4_ADDR(&ap_ip.gw, 192, 168, 1, 100);
-    IP4_ADDR(&ap_ip.netmask, 255, 255, 255, 0);
-    esp_netif_dhcps_stop(ap_netif);
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(ap_netif, &ap_ip));
-    ESP_ERROR_CHECK(esp_netif_dhcps_start(ap_netif));
+    ESP_ERROR_CHECK(esp_wifi_set_default_wifi_ap_handlers());
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init));
@@ -91,13 +87,20 @@ esp_err_t wifi_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_ERROR_CHECK(usb_network_start(ap_netif));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "configuration AP \"%s\" at 192.168.1.100",
-             settings->softap_ssid);
+    ESP_LOGI(TAG, "configuration AP \"%s\" at %s",
+             settings->softap_ssid, settings->usb_dhcp_server_ip);
     return ESP_OK;
 }
 
 void wifi_wait_connected(void)
 {
     xEventGroupWaitBits(s_wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+}
+
+bool wifi_connected(void)
+{
+    return s_wifi_events &&
+        (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) != 0;
 }

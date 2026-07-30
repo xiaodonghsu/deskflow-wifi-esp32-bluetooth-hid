@@ -24,6 +24,7 @@ typedef struct {
     uint16_t deskflow_port;
     char softap_ssid[APP_SETTINGS_AP_SSID_LEN];
     char softap_password[APP_SETTINGS_PASS_LEN];
+    char usb_dhcp_server_ip[APP_SETTINGS_HOST_LEN];
     char ble_device_name[APP_SETTINGS_BLE_NAME_LEN];
     app_hid_settings_t hid[APP_MAX_HID_DEVICES];
 } app_settings_t;
