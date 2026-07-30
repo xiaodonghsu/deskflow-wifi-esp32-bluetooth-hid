@@ -25,6 +25,9 @@ static const char *TAG = "usb_network";
 static EventGroupHandle_t s_usb_events;
 static esp_netif_t *s_usb_netif;
 static esp_netif_t *s_bridge_netif;
+static portMUX_TYPE s_peer_lock = portMUX_INITIALIZER_UNLOCKED;
+static esp_netif_pair_mac_ip_t s_usb_peer;
+static bool s_usb_peer_known;
 
 static esp_err_t usb_receive(void *buffer, uint16_t len, void *ctx)
 {
@@ -65,8 +68,77 @@ static void usb_event(tinyusb_event_t *event, void *arg)
         ESP_LOGI(TAG, "USB NCM host attached");
     } else if (event->id == TINYUSB_EVENT_DETACHED) {
         xEventGroupClearBits(s_usb_events, USB_ATTACHED_BIT);
+        taskENTER_CRITICAL(&s_peer_lock);
+        s_usb_peer_known = false;
+        taskEXIT_CRITICAL(&s_peer_lock);
         ESP_LOGI(TAG, "USB NCM host detached");
     }
+}
+
+static void assigned_ip_event(void *arg, esp_event_base_t base,
+                              int32_t id, void *data)
+{
+    (void)arg;
+    (void)base;
+    (void)id;
+    const ip_event_assigned_ip_to_client_t *event = data;
+    if (event->esp_netif != s_bridge_netif || !usb_network_attached()) return;
+
+    wifi_sta_list_t stations;
+    if (esp_wifi_ap_get_sta_list(&stations) == ESP_OK) {
+        for (int i = 0; i < stations.num; ++i)
+            if (memcmp(stations.sta[i].mac, event->mac, sizeof(event->mac)) == 0)
+                return;
+    }
+
+    char expected[16];
+    char assigned[16];
+    if (usb_network_peer_ip(expected, sizeof(expected)) != ESP_OK) return;
+    snprintf(assigned, sizeof(assigned), IPSTR, IP2STR(&event->ip));
+    if (strcmp(expected, assigned) != 0) return;
+
+    taskENTER_CRITICAL(&s_peer_lock);
+    memcpy(s_usb_peer.mac, event->mac, sizeof(s_usb_peer.mac));
+    s_usb_peer.ip = event->ip;
+    s_usb_peer_known = true;
+    taskEXIT_CRITICAL(&s_peer_lock);
+}
+
+esp_err_t usb_network_resolve_clients(esp_netif_pair_mac_ip_t *clients,
+                                      size_t count)
+{
+    if (!s_bridge_netif || !clients || count == 0)
+        return ESP_ERR_INVALID_STATE;
+    return esp_netif_dhcps_get_clients_by_mac(s_bridge_netif, (int)count,
+                                               clients);
+}
+
+bool usb_network_peer_info(char *ip, size_t ip_capacity,
+                           char *mac, size_t mac_capacity)
+{
+    if (!usb_network_attached()) return false;
+    esp_netif_pair_mac_ip_t peer;
+    bool known;
+    taskENTER_CRITICAL(&s_peer_lock);
+    peer = s_usb_peer;
+    known = s_usb_peer_known;
+    taskEXIT_CRITICAL(&s_peer_lock);
+
+    if (ip && ip_capacity > 0) {
+        if (known)
+            snprintf(ip, ip_capacity, IPSTR, IP2STR(&peer.ip));
+        else
+            strlcpy(ip, "等待 DHCP", ip_capacity);
+    }
+    if (mac && mac_capacity > 0) {
+        if (known)
+            snprintf(mac, mac_capacity, "%02X:%02X:%02X:%02X:%02X:%02X",
+                     peer.mac[0], peer.mac[1], peer.mac[2],
+                     peer.mac[3], peer.mac[4], peer.mac[5]);
+        else
+            strlcpy(mac, "尚未获取", mac_capacity);
+    }
+    return true;
 }
 
 static esp_err_t create_usb_port(uint8_t mac[6])
@@ -234,6 +306,9 @@ esp_err_t usb_network_start(esp_netif_t *wifi_ap_netif)
                         TAG, "failed to add SoftAP bridge port");
     ESP_RETURN_ON_ERROR(esp_netif_attach(s_bridge_netif, glue), TAG,
                         "failed to attach bridge");
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(
+        IP_EVENT, IP_EVENT_ASSIGNED_IP_TO_CLIENT, assigned_ip_event, NULL),
+        TAG, "failed to register DHCP client event");
     return esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_START,
                                       bridge_started, NULL);
 }

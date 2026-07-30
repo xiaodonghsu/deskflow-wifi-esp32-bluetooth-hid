@@ -17,6 +17,7 @@
 static const char *TAG = "wifi";
 static EventGroupHandle_t s_wifi_events;
 static unsigned s_retry_count;
+static esp_netif_t *s_sta_netif;
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -50,7 +51,8 @@ esp_err_t wifi_start(void)
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    if (!esp_netif_create_default_wifi_sta()) return ESP_FAIL;
+    s_sta_netif = esp_netif_create_default_wifi_sta();
+    if (!s_sta_netif) return ESP_FAIL;
     esp_netif_inherent_config_t ap_base = ESP_NETIF_INHERENT_DEFAULT_WIFI_AP();
     ap_base.flags = ESP_NETIF_FLAG_AUTOUP;
     ap_base.ip_info = NULL;
@@ -103,4 +105,50 @@ bool wifi_connected(void)
 {
     return s_wifi_events &&
         (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) != 0;
+}
+
+bool wifi_sta_status(wifi_sta_status_t *status)
+{
+    if (!status || !wifi_connected() || !s_sta_netif) return false;
+    memset(status, 0, sizeof(*status));
+
+    esp_netif_ip_info_t ip;
+    wifi_ap_record_t ap;
+    if (esp_netif_get_ip_info(s_sta_netif, &ip) != ESP_OK ||
+        esp_wifi_sta_get_ap_info(&ap) != ESP_OK)
+        return false;
+
+    strlcpy(status->ssid, (const char *)ap.ssid, sizeof(status->ssid));
+    status->rssi = ap.rssi;
+    snprintf(status->ip, sizeof(status->ip), IPSTR, IP2STR(&ip.ip));
+    snprintf(status->netmask, sizeof(status->netmask), IPSTR,
+             IP2STR(&ip.netmask));
+    snprintf(status->gateway, sizeof(status->gateway), IPSTR, IP2STR(&ip.gw));
+    return true;
+}
+
+size_t wifi_ap_clients(wifi_ap_client_t *clients, size_t capacity)
+{
+    if (!clients || capacity == 0) return 0;
+    wifi_sta_list_t stations;
+    if (esp_wifi_ap_get_sta_list(&stations) != ESP_OK) return 0;
+
+    size_t count = stations.num < capacity ? stations.num : capacity;
+    esp_netif_pair_mac_ip_t pairs[ESP_WIFI_MAX_CONN_NUM] = {0};
+    for (size_t i = 0; i < count; ++i)
+        memcpy(pairs[i].mac, stations.sta[i].mac, sizeof(pairs[i].mac));
+    usb_network_resolve_clients(pairs, count);
+
+    for (size_t i = 0; i < count; ++i) {
+        snprintf(clients[i].mac, sizeof(clients[i].mac),
+                 "%02X:%02X:%02X:%02X:%02X:%02X",
+                 pairs[i].mac[0], pairs[i].mac[1], pairs[i].mac[2],
+                 pairs[i].mac[3], pairs[i].mac[4], pairs[i].mac[5]);
+        if (pairs[i].ip.addr)
+            snprintf(clients[i].ip, sizeof(clients[i].ip), IPSTR,
+                     IP2STR(&pairs[i].ip));
+        else
+            strlcpy(clients[i].ip, "尚未获取", sizeof(clients[i].ip));
+    }
+    return count;
 }

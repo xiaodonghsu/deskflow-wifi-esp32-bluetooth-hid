@@ -53,8 +53,16 @@ esp32-hid-config
 ```text
 http://192.168.100.1/
 ```
+<div align="center">
+  <img src="docs/images/config-page-summary.png" width="200" alt="Deskflow-Wifi-ESP32-HID">
+  <img src="docs/images/config-page-communication.png" width="200" alt="Deskflow-Wifi-ESP32-HID">
+  <img src="docs/images/config-page-hid.png" width="200" alt="Deskflow-Wifi-ESP32-HID">
+</div>
+<!-- ![配置页面-概览](docs/images/config-page-summary.png)
 
-![配置页面](docs/images/config-page.png)
+![配置页面-概览](docs/images/config-page-communication.png)
+
+![配置页面-HID](docs/images/config-page-hid.png) -->
 
 页面包含通信设置（Wi-Fi 凭据、STA 备用 Deskflow 服务器的 IPv4 地址和端口、SoftAP 凭据、USB/SoftAP DHCP Server 地址以及 BLE 设备名称），以及每个 HID 槽位单独的 Deskflow 屏幕名称、宽度和高度。点击 **保存并重启设备** 来验证并将表单持久化到 NVS 中。已保存的值将覆盖 `main/app_config.h` 中的编译时默认值。
 

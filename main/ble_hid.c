@@ -406,6 +406,72 @@ bool ble_hid_connected(size_t target)
     return connected;
 }
 
+bool ble_hid_peer_info(size_t target, bool *connected, char *address,
+                       size_t address_capacity)
+{
+    if (target >= APP_MAX_HID_DEVICES) return false;
+
+    hid_peer_t peer;
+    taskENTER_CRITICAL(&s_peers_lock);
+    peer = s_peers[target];
+    taskEXIT_CRITICAL(&s_peers_lock);
+
+    if (connected) *connected = peer.connected;
+    if (address && address_capacity > 0) {
+        if (peer.has_peer) {
+            snprintf(address, address_capacity, "%02X:%02X:%02X:%02X:%02X:%02X",
+                     peer.peer_addr.val[5], peer.peer_addr.val[4],
+                     peer.peer_addr.val[3], peer.peer_addr.val[2],
+                     peer.peer_addr.val[1], peer.peer_addr.val[0]);
+        } else {
+            address[0] = '\0';
+        }
+    }
+    return peer.has_peer;
+}
+
+esp_err_t ble_hid_remove_peer(size_t target)
+{
+    if (target >= APP_MAX_HID_DEVICES) return ESP_ERR_INVALID_ARG;
+
+    hid_peer_t peer;
+    taskENTER_CRITICAL(&s_peers_lock);
+    peer = s_peers[target];
+    if (peer.has_peer) {
+        memset(&s_peers[target], 0, sizeof(s_peers[target]));
+        s_peers[target].conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    }
+    taskEXIT_CRITICAL(&s_peers_lock);
+    if (!peer.has_peer) return ESP_ERR_NOT_FOUND;
+
+    xEventGroupClearBits(s_peer_events, BIT(target));
+
+    char key[8];
+    nvs_handle_t nvs;
+    snprintf(key, sizeof(key), "peer%u", (unsigned)target);
+    esp_err_t err = nvs_open("hid_slots", NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        err = nvs_erase_key(nvs, key);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+        if (err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+
+    int store_rc = ble_store_util_delete_peer(&peer.peer_addr);
+    if (store_rc != 0 && store_rc != BLE_HS_ENOENT) {
+        ESP_LOGW(TAG, "failed to delete target %u bond: %d",
+                 (unsigned)target + 1, store_rc);
+        if (err == ESP_OK) err = ESP_FAIL;
+    }
+    if (peer.connected)
+        ble_gap_terminate(peer.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+
+    advertise();
+    ESP_LOGI(TAG, "removed HID target %u from memory, NVS and bond store",
+             (unsigned)target + 1);
+    return err;
+}
+
 void ble_hid_wait_connected(size_t target)
 {
     if (target >= APP_MAX_HID_DEVICES) return;

@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS "main.c" "app_settings.c" "config_server.c" "wifi.c" "usb_network.c" "ble_hid.c" "deskflow.c"
     INCLUDE_DIRS "."
-    REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_http_server bt espressif__esp_tinyusb
+    REQUIRES nvs_flash esp_wifi esp_event esp_netif esp_http_server esp_app_format
+             spi_flash bt espressif__esp_tinyusb
 )
