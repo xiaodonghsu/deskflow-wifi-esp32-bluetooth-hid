@@ -2,6 +2,7 @@
 #include "app_config.h"
 #include "app_settings.h"
 #include "ble_hid.h"
+#include "rgb_led.h"
 #include "usb_network.h"
 #include "wifi.h"
 
@@ -179,6 +180,7 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
         client->modifiers = hid_modifiers(be16(p + 12));
         ble_hid_keyboard(client->target, client->modifiers, client->keys);
         ble_hid_mouse(client->target, 0, 0, 0, 0);
+        rgb_led_show_device(client->target);
         ESP_LOGI(TAG, "[%s] cursor entered at %d,%d",
                  client->screen_name, client->last_x, client->last_y);
     } else if (!memcmp(p, "DKDL", 4) && n >= 14) {
@@ -224,6 +226,7 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
         client->have_position = false;
         ble_hid_keyboard(client->target, 0, client->keys);
         ble_hid_mouse(client->target, 0, 0, 0, 0);
+        rgb_led_off();
     } else {
         return false;
     }
@@ -452,6 +455,9 @@ static void client_task(void *arg)
 
 esp_err_t deskflow_start(void)
 {
+    esp_err_t err = rgb_led_init();
+    if (err != ESP_OK) return err;
+
     const app_settings_t *settings = app_settings_get();
     for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
         deskflow_client_t *client = &s_clients[i];

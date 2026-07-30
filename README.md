@@ -37,6 +37,7 @@ ESP32-S3 优先通过 USB CDC-NCM、备用通过 Wi-Fi STA 与 Deskflow 服务�
 - 虚拟屏幕尺寸：`1920x1080`
 - 蓝牙名称：`Deskflow ESP32 HID`
 - 最大同时 HID 主机数：`3`
+- 板载 RGB 灯：GPIO48；光标进入设备 1/2/3 时显示红/绿/蓝，离开时熄灭
 
 可在 `main/app_config.h` 中修改这些值。
 

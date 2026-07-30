@@ -13,6 +13,9 @@
 #define APP_USB_DHCP_SERVER_IP   "192.168.100.1"
 #define APP_BLE_DEVICE_NAME      "Deskflow ESP32 HID"
 
+#define APP_RGB_LED_GPIO         48
+#define APP_RGB_LED_BRIGHTNESS   64
+
 #define APP_HID_1_NAME           "esp32-hid-1"
 #define APP_HID_1_WIDTH          1920
 #define APP_HID_1_HEIGHT         1080
