@@ -1,8 +1,6 @@
 # Deskflow ESP32-S3 USB/Wi-Fi Client → NimBLE HID
 
-[Deskflow](https://github.com/deskflow/deskflow) 在 windows/mac/linux 的计算机之间表现出色，但无法支持 iPadOS / Android / HomonyOS 等移动平台。Deskflow-Wifi-ESP32-HID 通过将 ESP32S3 模拟为**多个**Deskflow客户端 + HID 键盘鼠标的方式将 Deskflow 的能力扩展到这些设备：
-
-- iOS 和 Android 出于安全原因，不允许后台应用拦截或模拟系统级的 HID（人机接口设备）事件。
+[Deskflow](https://github.com/deskflow/deskflow) 在 windows/mac/linux 的计算机之间表现出色，但由于iOS 和 Android 出于安全原因，不允许后台应用拦截或模拟系统级的 HID（人机接口设备）事件的限制，无法支持 iPadOS / Android / HomonyOS 等移动平台。Deskflow-Wifi-ESP32-HID 通过将 ESP32-S3 模拟为**多个**Deskflow客户端 + HID 键盘鼠标的方式将 Deskflow 的能力扩展到这些设备。
 
 ESP32-S3 优先通过 USB CDC-NCM、备用通过 Wi-Fi STA 与 Deskflow 服务机建立连接，模拟为**多个**Deskflow 客户端和 HID 设备。SoftAP 保留用于配置和备用接入。当平板/手机/电脑添加蓝牙 HID 设备时，Deskflow 主机添加设备。每个屏幕的键盘/鼠标事件都会被转发到配对的电脑、平板或手机。
 
@@ -18,6 +16,8 @@ ESP32-S3 优先通过 USB CDC-NCM、备用通过 Wi-Fi STA 与 Deskflow 服务�
 
 - Wi-Fi 与 BLE 共用 2.4 GHz 射频时可能产生延迟，低延迟场景建议使用 USB-NCM。
 - 不支持 deskflow 的剪贴板功能。
+- 由于鼠标方式出入屏幕的位置与标准的差异，可能出现鼠标在屏幕内边界上，无法向一个方向移动，这是只需要轻晃鼠标，一般可以解决。
+- 目前只支持3个设备，表现良好。用户可以自行尝试更多设备。
 
 ## 开发板
 
