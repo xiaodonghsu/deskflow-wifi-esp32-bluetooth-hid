@@ -20,6 +20,9 @@
 
 static const char *TAG = "deskflow";
 
+#define DESKFLOW_TASK_PRIORITY 13
+#define DESKFLOW_TASK_CORE     1
+
 typedef struct {
     size_t target;
     char screen_name[32];
@@ -468,7 +471,9 @@ esp_err_t deskflow_start(void)
         client->screen_height = settings->hid[i].height;
         snprintf(client->task_name, sizeof(client->task_name), "deskflow-%u",
                  (unsigned)i + 1);
-        if (xTaskCreate(client_task, client->task_name, 6144, client, 5, NULL) != pdPASS)
+        if (xTaskCreatePinnedToCore(client_task, client->task_name, 6144,
+                                    client, DESKFLOW_TASK_PRIORITY, NULL,
+                                    DESKFLOW_TASK_CORE) != pdPASS)
             return ESP_ERR_NO_MEM;
     }
     return ESP_OK;

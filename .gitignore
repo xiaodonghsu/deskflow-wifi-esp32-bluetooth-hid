@@ -78,5 +78,5 @@ Desktop.ini
 *.sln.docstates # Visual Studio
 
 # IDE
-.vscode\
-.devcontainer\
+.vscode/
+.devcontainer/
