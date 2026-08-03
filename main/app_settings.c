@@ -82,6 +82,10 @@ esp_err_t app_settings_init(void)
         nvs_get_u16(nvs, key, &s_settings.hid[i].width);
         snprintf(key, sizeof(key), "hh%u", (unsigned)i);
         nvs_get_u16(nvs, key, &s_settings.hid[i].height);
+        uint8_t auto_lock;
+        snprintf(key, sizeof(key), "hlock%u", (unsigned)i);
+        if (nvs_get_u8(nvs, key, &auto_lock) == ESP_OK)
+            s_settings.hid[i].auto_lock = auto_lock != 0;
     }
     nvs_close(nvs);
     return ESP_OK;
@@ -118,6 +122,10 @@ esp_err_t app_settings_save(const app_settings_t *settings)
         if (err == ESP_OK) {
             snprintf(key, sizeof(key), "hh%u", (unsigned)i);
             err = nvs_set_u16(nvs, key, settings->hid[i].height);
+        }
+        if (err == ESP_OK) {
+            snprintf(key, sizeof(key), "hlock%u", (unsigned)i);
+            err = nvs_set_u8(nvs, key, settings->hid[i].auto_lock ? 1 : 0);
         }
     }
     if (err == ESP_OK) err = nvs_commit(nvs);

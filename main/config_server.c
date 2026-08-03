@@ -46,6 +46,7 @@ static const char PAGE_HEAD[] =
     "label{display:flex;flex-direction:column;gap:6px;font-size:.9rem;font-weight:600}"
     "input{box-sizing:border-box;width:100%;padding:10px 12px;border:1px solid #b8c3d4;"
     "border-radius:8px;background:#fff;color:#172033;font:inherit}"
+    ".toggle{grid-column:1/-1;flex-direction:row;align-items:center}.toggle input{width:auto}"
     ".wide{grid-column:1/-1}.hid{border-top:1px solid #dce3ed;padding-top:14px;margin-top:14px}"
     ".hid:first-of-type{border-top:0;padding-top:0}.hint{font-size:.84rem;color:#61708a}"
     "button{width:100%;border:0;border-radius:10px;padding:13px;background:#2463d4;"
@@ -314,6 +315,13 @@ static esp_err_t hid_handler(httpd_req_t *req)
         snprintf(field, sizeof(field), "hid%u_height", (unsigned)i + 1);
         HTTP_RETURN_ON_ERROR(send_input(req, "屏幕高度", field, "number", height,
                                    "required min=\"1\" max=\"32767\""));
+        char toggle[192];
+        int toggle_len = snprintf(toggle, sizeof(toggle),
+            "<label class=\"toggle\"><input type=\"checkbox\" name=\"hid%u_auto_lock\" "
+            "value=\"1\" %s>自动锁屏（鼠标离开屏幕时）</label>",
+            (unsigned)i + 1, settings->hid[i].auto_lock ? "checked" : "");
+        if (toggle_len < 0 || (size_t)toggle_len >= sizeof(toggle)) return ESP_FAIL;
+        HTTP_RETURN_ON_ERROR(httpd_resp_send_chunk(req, toggle, toggle_len));
         bool connected = false;
         char address[18];
         bool paired = ble_hid_peer_info(i, &connected, address, sizeof(address));
@@ -492,6 +500,11 @@ static esp_err_t save_hid_handler(httpd_req_t *req)
             !parse_u16(width, 1, 32767, &settings.hid[i].width) ||
             !parse_u16(height, 1, 32767, &settings.hid[i].height) ||
             !valid_text(settings.hid[i].name)) goto invalid;
+        snprintf(field, sizeof(field), "hid%u_auto_lock", (unsigned)i + 1);
+        char checked[2];
+        settings.hid[i].auto_lock =
+            form_value(form, field, checked, sizeof(checked)) == ESP_OK &&
+            strcmp(checked, "1") == 0;
     }
     for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i)
         for (size_t j = i + 1; j < APP_MAX_HID_DEVICES; ++j)

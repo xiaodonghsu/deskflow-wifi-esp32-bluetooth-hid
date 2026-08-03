@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "app_config.h"
 #include "esp_err.h"
@@ -15,6 +16,7 @@ typedef struct {
     char name[APP_SETTINGS_HID_NAME_LEN];
     uint16_t width;
     uint16_t height;
+    bool auto_lock;
 } app_hid_settings_t;
 
 typedef struct {

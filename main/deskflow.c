@@ -249,6 +249,11 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
         client->have_position = false;
         ble_hid_keyboard(client->target, 0, client->keys);
         ble_hid_mouse(client->target, 0, 0, 0, 0);
+        if (app_settings_get()->hid[client->target].auto_lock) {
+            ESP_LOGI(TAG, "[%s] cursor left; locking HID target",
+                     client->screen_name);
+            ble_hid_lock_screen(client->target);
+        }
         rgb_led_off();
     } else {
         return false;
