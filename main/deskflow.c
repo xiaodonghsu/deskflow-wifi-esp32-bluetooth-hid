@@ -35,6 +35,9 @@ typedef struct {
     int16_t last_x;
     int16_t last_y;
     bool have_position;
+    int16_t exit_x;
+    int16_t exit_y;
+    bool have_exit_position;
     bool using_usb;
 } deskflow_client_t;
 
@@ -175,14 +178,26 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
     } else if (!memcmp(p, "CALV", 4)) {
         send_frame(fd, "CALV", 4);
     } else if (!memcmp(p, "CINN", 4) && n >= 14) {
-        client->last_x = (int16_t)be16(p + 4);
-        client->last_y = (int16_t)be16(p + 6);
-        client->have_position = true;
+        int16_t x = (int16_t)be16(p + 4);
+        int16_t y = (int16_t)be16(p + 6);
         memset(client->keys, 0, sizeof(client->keys));
         client->buttons = 0;
         client->modifiers = hid_modifiers(be16(p + 12));
         ble_hid_keyboard(client->target, client->modifiers, client->keys);
-        ble_hid_mouse(client->target, 0, 0, 0, 0);
+        if (client->have_exit_position) {
+            /*
+             * The HID target only sees relative mouse reports.  Reconcile its
+             * cursor with Deskflow's new absolute entry position before using
+             * that position as the baseline for subsequent DMMV messages.
+             */
+            mouse_move(client, x - client->exit_x, y - client->exit_y);
+            client->have_exit_position = false;
+        } else {
+            ble_hid_mouse(client->target, 0, 0, 0, 0);
+        }
+        client->last_x = x;
+        client->last_y = y;
+        client->have_position = true;
         rgb_led_show_device(client->target);
         ESP_LOGI(TAG, "[%s] cursor entered at %d,%d",
                  client->screen_name, client->last_x, client->last_y);
@@ -224,6 +239,11 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
         ble_hid_mouse(client->target, client->buttons, 0, 0,
                       wheel > 127 ? 127 : wheel < -127 ? -127 : wheel);
     } else if (!memcmp(p, "COUT", 4)) {
+        if (client->have_position) {
+            client->exit_x = client->last_x;
+            client->exit_y = client->last_y;
+            client->have_exit_position = true;
+        }
         memset(client->keys, 0, sizeof(client->keys));
         client->modifiers = client->buttons = 0;
         client->have_position = false;
