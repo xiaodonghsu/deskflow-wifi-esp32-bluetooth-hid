@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+
 # Deskflow ESP32-S3 USB/Wi-Fi Client → NimBLE HID
 
 [Deskflow](https://github.com/deskflow/deskflow) 在 windows/mac/linux 的计算机之间表现出色，但由于iOS 和 Android 出于安全原因，不允许后台应用拦截或模拟系统级的 HID（人机接口设备）事件的限制，无法支持 iPadOS / Android / HomonyOS 等移动平台。Deskflow-Wifi-ESP32-HID 通过将 ESP32-S3 模拟为**多个**Deskflow客户端 + HID 键盘鼠标的方式将 Deskflow 的能力扩展到这些设备。
@@ -117,3 +119,7 @@ esp32-hid-3 -> 第三个 BLE 主机
 ## 致谢
 
 项目灵感来源于: [DShare-HID](https://github.com/lockekk/dshare-hid)
+
+## 许可证
+
+本项目采用 [GNU General Public License v3.0](LICENSE) 许可，SPDX 标识为 `GPL-3.0-only`。
