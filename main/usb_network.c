@@ -7,14 +7,12 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "esp_netif_br_glue.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "lwip/esp_netif_net_stack.h"
 #include "lwip/inet.h"
 #include "lwip/ip4_addr.h"
-#include "apps/dhcpserver/dhcpserver.h"
+#include "lwip/sockets.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include "tinyusb_net.h"
@@ -24,7 +22,6 @@
 static const char *TAG = "usb_network";
 static EventGroupHandle_t s_usb_events;
 static esp_netif_t *s_usb_netif;
-static esp_netif_t *s_bridge_netif;
 static portMUX_TYPE s_peer_lock = portMUX_INITIALIZER_UNLOCKED;
 static esp_netif_pair_mac_ip_t s_usb_peer;
 static bool s_usb_peer_known;
@@ -82,14 +79,7 @@ static void assigned_ip_event(void *arg, esp_event_base_t base,
     (void)base;
     (void)id;
     const ip_event_assigned_ip_to_client_t *event = data;
-    if (event->esp_netif != s_bridge_netif || !usb_network_attached()) return;
-
-    wifi_sta_list_t stations;
-    if (esp_wifi_ap_get_sta_list(&stations) == ESP_OK) {
-        for (int i = 0; i < stations.num; ++i)
-            if (memcmp(stations.sta[i].mac, event->mac, sizeof(event->mac)) == 0)
-                return;
-    }
+    if (event->esp_netif != s_usb_netif || !usb_network_attached()) return;
 
     char expected[16];
     char assigned[16];
@@ -102,15 +92,6 @@ static void assigned_ip_event(void *arg, esp_event_base_t base,
     s_usb_peer.ip = event->ip;
     s_usb_peer_known = true;
     taskEXIT_CRITICAL(&s_peer_lock);
-}
-
-esp_err_t usb_network_resolve_clients(esp_netif_pair_mac_ip_t *clients,
-                                      size_t count)
-{
-    if (!s_bridge_netif || !clients || count == 0)
-        return ESP_ERR_INVALID_STATE;
-    return esp_netif_dhcps_get_clients_by_mac(s_bridge_netif, (int)count,
-                                               clients);
 }
 
 bool usb_network_peer_info(char *ip, size_t ip_capacity,
@@ -141,7 +122,7 @@ bool usb_network_peer_info(char *ip, size_t ip_capacity,
     return true;
 }
 
-static esp_err_t create_usb_port(uint8_t mac[6])
+static esp_err_t create_usb_netif(uint8_t mac[6])
 {
     esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_ETH();
     /*
@@ -150,11 +131,19 @@ static esp_err_t create_usb_port(uint8_t mac[6])
      * ethernetif_input() drops every received frame while the netif is down,
      * including DHCP Discover packets.
      */
-    base.flags = ESP_NETIF_FLAG_AUTOUP;
-    base.ip_info = NULL;
+    esp_netif_ip_info_t usb_ip = {0};
+    ip4_addr_t parsed_ip;
+    if (!ip4addr_aton(app_settings_get()->usb_dhcp_server_ip, &parsed_ip))
+        return ESP_ERR_INVALID_ARG;
+    usb_ip.ip.addr = parsed_ip.addr;
+    usb_ip.gw = usb_ip.ip;
+    IP4_ADDR(&usb_ip.netmask, 255, 255, 255, 252);
+
+    base.flags = ESP_NETIF_FLAG_AUTOUP | ESP_NETIF_DHCP_SERVER;
+    base.ip_info = &usb_ip;
     base.if_key = "USB_NCM";
-    base.if_desc = "usb ncm bridge port";
-    base.route_prio = 0;
+    base.if_desc = "usb ncm";
+    base.route_prio = 80;
 
     esp_netif_driver_ifconfig_t driver = {
         .handle = (void *)1,
@@ -175,9 +164,20 @@ static esp_err_t create_usb_port(uint8_t mac[6])
     s_usb_netif = esp_netif_new(&config);
     if (!s_usb_netif) return ESP_ERR_NO_MEM;
     ESP_RETURN_ON_ERROR(esp_netif_set_mac(s_usb_netif, mac), TAG,
-                        "failed to set USB port MAC");
+                        "failed to set USB netif MAC");
     esp_netif_action_start(s_usb_netif, 0, 0, NULL);
     return ESP_OK;
+}
+
+esp_err_t usb_network_bind_socket(int socket_fd)
+{
+    if (!s_usb_netif || socket_fd < 0) return ESP_ERR_INVALID_STATE;
+    struct ifreq interface = {0};
+    ESP_RETURN_ON_ERROR(esp_netif_get_netif_impl_name(
+        s_usb_netif, interface.ifr_name), TAG,
+        "failed to get USB netif name");
+    return setsockopt(socket_fd, SOL_SOCKET, SO_BINDTODEVICE,
+                      &interface, sizeof(interface)) == 0 ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t usb_network_peer_ip(char *address, size_t capacity)
@@ -198,57 +198,8 @@ bool usb_network_attached(void)
         (xEventGroupGetBits(s_usb_events) & USB_ATTACHED_BIT) != 0;
 }
 
-static void bridge_started(void *arg, esp_event_base_t base,
-                           int32_t event_id, void *event_data)
+esp_err_t usb_network_start(void)
 {
-    (void)arg;
-    (void)base;
-    (void)event_id;
-    (void)event_data;
-
-    ESP_ERROR_CHECK(esp_netif_bridge_add_port(s_bridge_netif, s_usb_netif));
-    esp_netif_dhcps_stop(s_bridge_netif);
-
-    ip4_addr_t server;
-    ESP_ERROR_CHECK(ip4addr_aton(app_settings_get()->usb_dhcp_server_ip,
-                                 &server) ? ESP_OK : ESP_ERR_INVALID_ARG);
-    uint32_t base_address = ntohl(server.addr);
-    dhcps_lease_t leases = {
-        .enable = true,
-        .start_ip.addr = htonl(base_address + 1),
-        .end_ip.addr = htonl(base_address + 5),
-    };
-    ESP_ERROR_CHECK(esp_netif_dhcps_option(
-        s_bridge_netif, ESP_NETIF_OP_SET, ESP_NETIF_REQUESTED_IP_ADDRESS,
-        &leases, sizeof(leases)));
-
-    /*
-     * The bridge glue only marks the bridge up after a physical Ethernet
-     * link connects or a station joins the SoftAP.  USB NCM emits neither
-     * event, so make the bridge operational explicitly before starting
-     * DHCP.  esp_netif_dhcps_start() otherwise returns ESP_OK while leaving
-     * the server in ESP_NETIF_DHCP_INIT when the netif is down.
-     */
-    esp_netif_action_connected(s_bridge_netif, WIFI_EVENT,
-                               WIFI_EVENT_AP_START, NULL);
-    ESP_ERROR_CHECK(esp_netif_is_netif_up(s_bridge_netif)
-                        ? ESP_OK : ESP_ERR_INVALID_STATE);
-    ESP_ERROR_CHECK(esp_netif_dhcps_start(s_bridge_netif));
-
-    esp_netif_dhcp_status_t dhcp_status;
-    ESP_ERROR_CHECK(esp_netif_dhcps_get_status(s_bridge_netif, &dhcp_status));
-    ESP_ERROR_CHECK(dhcp_status == ESP_NETIF_DHCP_STARTED
-                        ? ESP_OK : ESP_ERR_INVALID_STATE);
-
-    char peer[16];
-    ESP_ERROR_CHECK(usb_network_peer_ip(peer, sizeof(peer)));
-    ESP_LOGI(TAG, "USB/SoftAP bridge up at %s/24, DHCP started, USB host %s",
-             app_settings_get()->usb_dhcp_server_ip, peer);
-}
-
-esp_err_t usb_network_start(esp_netif_t *wifi_ap_netif)
-{
-    if (!wifi_ap_netif) return ESP_ERR_INVALID_ARG;
     s_usb_events = xEventGroupCreate();
     if (!s_usb_events) return ESP_ERR_NO_MEM;
 
@@ -267,48 +218,15 @@ esp_err_t usb_network_start(esp_netif_t *wifi_ap_netif)
     memcpy(net.mac_addr, usb_mac, sizeof(net.mac_addr));
     ESP_RETURN_ON_ERROR(tinyusb_net_init(&net), TAG,
                         "failed to initialize USB NCM");
-    ESP_RETURN_ON_ERROR(create_usb_port(usb_mac), TAG,
-                        "failed to create USB network port");
-
-    esp_netif_ip_info_t bridge_ip = {0};
-    ip4_addr_t parsed_bridge_ip;
-    if (!ip4addr_aton(app_settings_get()->usb_dhcp_server_ip,
-                      &parsed_bridge_ip))
-        return ESP_ERR_INVALID_ARG;
-    bridge_ip.ip.addr = parsed_bridge_ip.addr;
-    bridge_ip.gw = bridge_ip.ip;
-    IP4_ADDR(&bridge_ip.netmask, 255, 255, 255, 0);
-
-    bridgeif_config_t bridge_options = {
-        .max_fdb_dyn_entries = 12,
-        .max_fdb_sta_entries = 2,
-        .max_ports = 2,
-    };
-    esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_BR_DHCPS();
-    base.ip_info = &bridge_ip;
-    base.bridge_info = &bridge_options;
-    base.if_key = "USB_AP_BR";
-    base.if_desc = "USB NCM and SoftAP bridge";
-    base.route_prio = 80;
-    ESP_RETURN_ON_ERROR(esp_read_mac(base.mac, ESP_MAC_WIFI_SOFTAP), TAG,
-                        "failed to derive bridge MAC");
-
-    esp_netif_config_t bridge_config = {
-        .base = &base,
-        .stack = ESP_NETIF_NETSTACK_DEFAULT_BR,
-    };
-    s_bridge_netif = esp_netif_new(&bridge_config);
-    if (!s_bridge_netif) return ESP_ERR_NO_MEM;
-
-    esp_netif_br_glue_handle_t glue = esp_netif_br_glue_new();
-    if (!glue) return ESP_ERR_NO_MEM;
-    ESP_RETURN_ON_ERROR(esp_netif_br_glue_add_wifi_port(glue, wifi_ap_netif),
-                        TAG, "failed to add SoftAP bridge port");
-    ESP_RETURN_ON_ERROR(esp_netif_attach(s_bridge_netif, glue), TAG,
-                        "failed to attach bridge");
+    ESP_RETURN_ON_ERROR(create_usb_netif(usb_mac), TAG,
+                        "failed to create USB network interface");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(
         IP_EVENT, IP_EVENT_ASSIGNED_IP_TO_CLIENT, assigned_ip_event, NULL),
         TAG, "failed to register DHCP client event");
-    return esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_START,
-                                      bridge_started, NULL);
+    char peer[16];
+    ESP_RETURN_ON_ERROR(usb_network_peer_ip(peer, sizeof(peer)), TAG,
+                        "failed to calculate USB peer address");
+    ESP_LOGI(TAG, "USB NCM up at %s/30, DHCP host %s",
+             app_settings_get()->usb_dhcp_server_ip, peer);
+    return ESP_OK;
 }

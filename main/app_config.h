@@ -10,6 +10,7 @@
 
 #define APP_SOFTAP_SSID          "esp32-hid-config"
 #define APP_SOFTAP_PASSWORD      ""
+#define APP_SOFTAP_IP            "192.168.101.1"
 #define APP_USB_DHCP_SERVER_IP   "192.168.100.1"
 #define APP_BLE_DEVICE_NAME      "Deskflow ESP32 HID"
 

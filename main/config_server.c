@@ -272,7 +272,7 @@ static esp_err_t communication_handler(httpd_req_t *req)
                                settings->softap_ssid, "required maxlength=\"32\""));
     HTTP_RETURN_ON_ERROR(send_input(req, "SoftAP 密码（可选）", "softap_password", "password",
                                settings->softap_password, "maxlength=\"63\""));
-    HTTP_RETURN_ON_ERROR(send_input(req, "USB/SoftAP DHCP Server IP",
+    HTTP_RETURN_ON_ERROR(send_input(req, "USB NCM DHCP Server IP（/30）",
                                "usb_dhcp_server_ip", "text",
                                settings->usb_dhcp_server_ip,
                                "required inputmode=\"decimal\""));
@@ -349,8 +349,8 @@ static esp_err_t hid_handler(httpd_req_t *req)
     int footer_len = snprintf(footer, sizeof(footer),
         "</section><button type=\"submit\">保存 HID 设置并重启设备</button></form>"
         "<p class=\"hint\">配置保存在 NVS 中。配置页面地址为 "
-        "<code>http://%s/</code>；USB Deskflow 地址自动使用 DHCP Server IP + 1。</p>"
-        "</body></html>", settings->usb_dhcp_server_ip);
+        "<code>http://%s/</code>；USB Deskflow 地址自动使用 USB DHCP Server IP + 1。</p>"
+        "</body></html>", APP_SOFTAP_IP);
     if (footer_len < 0 || (size_t)footer_len >= sizeof(footer))
         return ESP_FAIL;
     HTTP_RETURN_ON_ERROR(httpd_resp_send_chunk(req, footer, footer_len));
@@ -438,10 +438,13 @@ static esp_err_t save_communication_handler(httpd_req_t *req)
 
     struct in_addr host_addr;
     struct in_addr dhcp_addr;
+    struct in_addr softap_addr;
     bool valid_dhcp_ip =
         inet_pton(AF_INET, settings.usb_dhcp_server_ip, &dhcp_addr) == 1 &&
-        (ntohl(dhcp_addr.s_addr) & 0xff) >= 1 &&
-        (ntohl(dhcp_addr.s_addr) & 0xff) <= 249;
+        (ntohl(dhcp_addr.s_addr) & 0x03) == 1 &&
+        inet_pton(AF_INET, APP_SOFTAP_IP, &softap_addr) == 1 &&
+        (ntohl(dhcp_addr.s_addr) & 0xffffff00) !=
+            (ntohl(softap_addr.s_addr) & 0xffffff00);
     if (!valid_text(settings.wifi_ssid) ||
         !valid_password(settings.wifi_password) ||
         inet_pton(AF_INET, settings.deskflow_host, &host_addr) != 1 ||
@@ -469,7 +472,7 @@ static esp_err_t save_communication_handler(httpd_req_t *req)
         "<title>配置已保存</title></head><body style=\"font-family:system-ui;padding:32px\">"
         "<h1>配置已保存</h1><p>新参数已经写入 NVS，设备正在重新启动…</p>"
         "<p>重启后请连接新的 SoftAP，然后访问 <code>http://%s/communication</code>。</p>"
-        "</body></html>", settings.usb_dhcp_server_ip);
+        "</body></html>", APP_SOFTAP_IP);
     if (response_len < 0 || (size_t)response_len >= sizeof(response)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "response generation failed");
@@ -607,6 +610,6 @@ esp_err_t config_server_start(void)
         return err;
     }
     ESP_LOGI(TAG, "configuration page: http://%s/",
-             app_settings_get()->usb_dhcp_server_ip);
+             APP_SOFTAP_IP);
     return ESP_OK;
 }

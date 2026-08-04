@@ -405,10 +405,16 @@ static void serve(deskflow_client_t *client, int fd)
     }
 }
 
-static int connect_server(const char *host, uint16_t port)
+static int connect_server(const char *host, uint16_t port, bool use_usb)
 {
     int client = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (client < 0) return -1;
+
+    if (use_usb && usb_network_bind_socket(client) != ESP_OK) {
+        ESP_LOGW(TAG, "failed to bind socket to USB NCM: errno %d", errno);
+        close(client);
+        return -1;
+    }
 
     struct timeval connect_timeout = { .tv_sec = 2, .tv_usec = 0 };
     setsockopt(client, SOL_SOCKET, SO_SNDTIMEO,
@@ -439,7 +445,7 @@ static void client_task(void *arg)
         if (usb_network_attached() &&
             usb_network_peer_ip(selected_host, sizeof(selected_host)) == ESP_OK) {
             link_name = "USB NCM";
-            client = connect_server(selected_host, settings->deskflow_port);
+            client = connect_server(selected_host, settings->deskflow_port, true);
             if (client < 0) {
                 ESP_LOGW(TAG, "[%s] USB server %s:%d unavailable; trying STA",
                          client_ctx->screen_name, selected_host,
@@ -450,7 +456,7 @@ static void client_task(void *arg)
             strlcpy(selected_host, settings->deskflow_host,
                     sizeof(selected_host));
             link_name = "Wi-Fi STA";
-            client = connect_server(selected_host, settings->deskflow_port);
+            client = connect_server(selected_host, settings->deskflow_port, false);
         }
         if (client < 0) {
             ESP_LOGW(TAG, "[%s] no Deskflow server reachable",

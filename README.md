@@ -38,7 +38,8 @@ ESP32-S3 优先通过 USB CDC-NCM、备用通过 Wi-Fi STA 与 Deskflow 服务�
 - Wi-Fi 密码：`goodlife`
 - Deskflow 服务器：`192.168.41.83:24800`
 - 配置 SoftAP：`esp32-hid-config`（无密码）
-- USB/SoftAP DHCP Server：`192.168.100.1`
+- USB NCM DHCP Server：`192.168.100.1/30`
+- 配置 SoftAP 网关：`192.168.101.1/24`
 - USB Deskflow 服务端：`192.168.100.2`（DHCP Server 地址 + 1）
 - Deskflow 客户端屏幕：`esp32-hid-1`、`esp32-hid-2`、`esp32-hid-3`
 - 虚拟屏幕尺寸：`1920x1080`
@@ -59,7 +60,7 @@ esp32-hid-config
 连接该网络并打开配置页面：
 
 ```text
-http://192.168.100.1/
+http://192.168.101.1/
 ```
 <div align="center">
   <img src="docs/images/config-page-summary.png" width="200" alt="Deskflow-Wifi-ESP32-HID">
@@ -67,18 +68,19 @@ http://192.168.100.1/
   <img src="docs/images/config-page-hid.png" width="200" alt="Deskflow-Wifi-ESP32-HID">
 </div>
 
-页面包含通信设置（Wi-Fi 凭据、STA 备用 Deskflow 服务器的 IPv4 地址和端口、SoftAP 凭据、USB/SoftAP DHCP Server 地址以及 BLE 设备名称），以及每个 HID 槽位单独的 Deskflow 屏幕名称、宽度、高度和“自动锁屏”选项。启用自动锁屏后，鼠标离开对应屏幕（收到 `COUT`）时，ESP32 会向该蓝牙设备发送 Keyboard Power 键。点击 **保存并重启设备** 来验证并将表单持久化到 NVS 中。已保存的值将覆盖 `main/app_config.h` 中的编译时默认值。
+页面包含通信设置（Wi-Fi 凭据、STA 备用 Deskflow 服务器的 IPv4 地址和端口、SoftAP 凭据、USB NCM DHCP Server 地址以及 BLE 设备名称），以及每个 HID 槽位单独的 Deskflow 屏幕名称、宽度、高度和“自动锁屏”选项。启用自动锁屏后，鼠标离开对应屏幕（收到 `COUT`）时，ESP32 会向该蓝牙设备发送 Keyboard Power 键。点击 **保存并重启设备** 来验证并将表单持久化到 NVS 中。已保存的值将覆盖 `main/app_config.h` 中的编译时默认值。
 
 SoftAP 密码是可选的。如果非空，必须包含 8-63 个字符；留空则会创建一个开放的配置网络。
 
 ## USB 与 Wi-Fi 链路
 
-ESP32-S3 的原生 USB-OTG 接口会枚举为 CDC-NCM 网卡。USB-NCM 与
-SoftAP 位于同一个 `255.255.255.0` 二层桥中，桥地址即配置页面中的
-DHCP Server 地址。租约从该地址的下一个地址开始；使用默认配置时，
-USB 电脑获得 `192.168.100.2`，随后连接 SoftAP 的终端依次获得后续地址。
+ESP32-S3 的原生 USB-OTG 接口会枚举为 CDC-NCM 网卡。USB-NCM 直接挂载
+`192.168.100.1/30`（可配置）并独立运行 DHCP，默认只向 USB 电脑分配
+`192.168.100.2`。SoftAP 不再进入软件 bridge，而是在独立的
+`192.168.101.1/24` 子网上运行自己的 DHCP，从而隔离两条链路的广播和生命周期。
 
-Deskflow 客户端优先连接 DHCP Server 地址 + 1 的 USB 电脑。USB 断开或
+Deskflow 客户端优先连接 USB DHCP Server 地址 + 1 的 USB 电脑，并将对应
+TCP socket 显式绑定到 USB NCM netif。USB 断开或
 该地址不可连接时，改用配置页面中的 Deskflow Server IP，通过 Wi-Fi STA
 重试。为了保证 USB 电脑取得第一个租约，请在 ESP32-S3 启动或复位前连接
 USB；USB-NCM 会先于 SoftAP 初始化。

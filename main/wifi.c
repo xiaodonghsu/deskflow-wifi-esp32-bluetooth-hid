@@ -11,6 +11,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "lwip/ip4_addr.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -18,6 +19,7 @@ static const char *TAG = "wifi";
 static EventGroupHandle_t s_wifi_events;
 static unsigned s_retry_count;
 static esp_netif_t *s_sta_netif;
+static esp_netif_t *s_ap_netif;
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -54,10 +56,15 @@ esp_err_t wifi_start(void)
     s_sta_netif = esp_netif_create_default_wifi_sta();
     if (!s_sta_netif) return ESP_FAIL;
     esp_netif_inherent_config_t ap_base = ESP_NETIF_INHERENT_DEFAULT_WIFI_AP();
-    ap_base.flags = ESP_NETIF_FLAG_AUTOUP;
-    ap_base.ip_info = NULL;
-    esp_netif_t *ap_netif = esp_netif_create_wifi(WIFI_IF_AP, &ap_base);
-    if (!ap_netif) return ESP_FAIL;
+    esp_netif_ip_info_t ap_ip = {0};
+    ip4_addr_t parsed_ap_ip;
+    if (!ip4addr_aton(APP_SOFTAP_IP, &parsed_ap_ip)) return ESP_ERR_INVALID_ARG;
+    ap_ip.ip.addr = parsed_ap_ip.addr;
+    ap_ip.gw = ap_ip.ip;
+    IP4_ADDR(&ap_ip.netmask, 255, 255, 255, 0);
+    ap_base.ip_info = &ap_ip;
+    s_ap_netif = esp_netif_create_wifi(WIFI_IF_AP, &ap_base);
+    if (!s_ap_netif) return ESP_FAIL;
     ESP_ERROR_CHECK(esp_wifi_set_default_wifi_ap_handlers());
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
@@ -89,10 +96,10 @@ esp_err_t wifi_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
-    ESP_ERROR_CHECK(usb_network_start(ap_netif));
+    ESP_ERROR_CHECK(usb_network_start());
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_LOGI(TAG, "configuration AP \"%s\" at %s",
-             settings->softap_ssid, settings->usb_dhcp_server_ip);
+             settings->softap_ssid, APP_SOFTAP_IP);
     return ESP_OK;
 }
 
@@ -137,7 +144,8 @@ size_t wifi_ap_clients(wifi_ap_client_t *clients, size_t capacity)
     esp_netif_pair_mac_ip_t pairs[ESP_WIFI_MAX_CONN_NUM] = {0};
     for (size_t i = 0; i < count; ++i)
         memcpy(pairs[i].mac, stations.sta[i].mac, sizeof(pairs[i].mac));
-    usb_network_resolve_clients(pairs, count);
+    if (s_ap_netif)
+        esp_netif_dhcps_get_clients_by_mac(s_ap_netif, (int)count, pairs);
 
     for (size_t i = 0; i < count; ++i) {
         snprintf(clients[i].mac, sizeof(clients[i].mac),
