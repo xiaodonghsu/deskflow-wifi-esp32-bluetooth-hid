@@ -6,6 +6,7 @@
 
 #define APP_DESKFLOW_PORT        24800
 #define APP_DESKFLOW_SERVER_IP   "192.168.41.83"
+#define APP_DESKFLOW_COUT_MOVE_MULTIPLIER 2
 #define APP_MAX_HID_DEVICES      3
 
 #define APP_SOFTAP_SSID          "esp32-hid-config"

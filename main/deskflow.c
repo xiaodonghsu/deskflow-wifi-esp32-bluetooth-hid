@@ -35,8 +35,11 @@ typedef struct {
     int16_t last_x;
     int16_t last_y;
     bool have_position;
-    int16_t exit_x;
-    int16_t exit_y;
+    int last_move_dx;
+    int last_move_dy;
+    bool have_last_move;
+    int exit_x;
+    int exit_y;
     bool have_exit_position;
     bool using_usb;
 } deskflow_client_t;
@@ -198,6 +201,7 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
         client->last_x = x;
         client->last_y = y;
         client->have_position = true;
+        client->have_last_move = false;
         rgb_led_show_device(client->target);
         ESP_LOGI(TAG, "[%s] cursor entered at %d,%d",
                  client->screen_name, client->last_x, client->last_y);
@@ -230,6 +234,9 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
         if (client->have_position) {
             int dx = x - client->last_x, dy = y - client->last_y;
             mouse_move(client, dx, dy);
+            client->last_move_dx = dx;
+            client->last_move_dy = dy;
+            client->have_last_move = true;
         }
         client->last_x = x; client->last_y = y; client->have_position = true;
     } else if (!memcmp(p, "DMWM", 4) && n >= 8) {
@@ -240,13 +247,36 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
                       wheel > 127 ? 127 : wheel < -127 ? -127 : wheel);
     } else if (!memcmp(p, "COUT", 4)) {
         if (client->have_position) {
-            client->exit_x = client->last_x;
-            client->exit_y = client->last_y;
+            int compensation_dx = 0;
+            int compensation_dy = 0;
+            if (client->have_last_move) {
+                compensation_dx = client->last_move_dx *
+                    APP_DESKFLOW_COUT_MOVE_MULTIPLIER;
+                compensation_dy = client->last_move_dy *
+                    APP_DESKFLOW_COUT_MOVE_MULTIPLIER;
+            }
+            client->exit_x = (int)client->last_x + compensation_dx;
+            client->exit_y = (int)client->last_y + compensation_dy;
             client->have_exit_position = true;
+            ESP_LOGI(TAG,
+                     "[%s] cursor left at %d,%d; COUT compensation %d,%d (x%d)",
+                     client->screen_name, client->last_x, client->last_y,
+                     compensation_dx, compensation_dy,
+                     APP_DESKFLOW_COUT_MOVE_MULTIPLIER);
+
+            /*
+             * Deskflow may emit COUT before its last absolute position reaches
+             * the edge during a fast movement.  Continue in the direction of
+             * the latest two DMMV positions so the HID cursor reaches the
+             * physical edge as well.
+             */
+            client->buttons = 0;
+            mouse_move(client, compensation_dx, compensation_dy);
         }
         memset(client->keys, 0, sizeof(client->keys));
         client->modifiers = client->buttons = 0;
         client->have_position = false;
+        client->have_last_move = false;
         ble_hid_keyboard(client->target, 0, client->keys);
         ble_hid_mouse(client->target, 0, 0, 0, 0);
         if (app_settings_get()->hid[client->target].auto_lock) {
