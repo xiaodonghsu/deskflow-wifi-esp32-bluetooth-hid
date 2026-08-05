@@ -20,6 +20,10 @@
 void ble_store_config_init(void);
 
 static const char *TAG = "ble_hid";
+#define HID_READY_TIMEOUT_MS 10000
+#define HID_WATCHDOG_PERIOD_MS 1000
+#define HID_APPEARANCE_GENERIC 0x03C0
+
 static uint16_t s_keyboard_handle;
 static uint16_t s_mouse_handle;
 static uint8_t s_protocol_mode = 1;
@@ -28,8 +32,14 @@ static uint8_t s_own_addr_type;
 
 typedef struct {
     bool connected;
+    bool encrypted;
+    bool keyboard_notify;
+    bool mouse_notify;
+    bool ready;
+    bool recovery_pending;
     bool has_peer;
     uint16_t conn_handle;
+    TickType_t connected_at;
     ble_addr_t peer_addr;
 } hid_peer_t;
 
@@ -179,6 +189,29 @@ static int target_for_handle(uint16_t conn_handle)
     return target;
 }
 
+static void update_ready(size_t target)
+{
+    bool was_ready;
+    bool ready;
+
+    taskENTER_CRITICAL(&s_peers_lock);
+    was_ready = s_peers[target].ready;
+    ready = s_peers[target].connected && s_peers[target].encrypted &&
+            s_peers[target].keyboard_notify && s_peers[target].mouse_notify;
+    s_peers[target].ready = ready;
+    taskEXIT_CRITICAL(&s_peers_lock);
+
+    if (ready)
+        xEventGroupSetBits(s_peer_events, BIT(target));
+    else
+        xEventGroupClearBits(s_peer_events, BIT(target));
+
+    if (ready != was_ready) {
+        ESP_LOGI(TAG, "HID target %u is %s",
+                 (unsigned)target + 1, ready ? "ready" : "not ready");
+    }
+}
+
 static unsigned connected_count(void)
 {
     unsigned count = 0;
@@ -222,8 +255,14 @@ static int assign_peer(uint16_t conn_handle)
     }
     if (target >= 0) {
         s_peers[target].connected = true;
+        s_peers[target].encrypted = false;
+        s_peers[target].keyboard_notify = false;
+        s_peers[target].mouse_notify = false;
+        s_peers[target].ready = false;
+        s_peers[target].recovery_pending = false;
         s_peers[target].has_peer = true;
         s_peers[target].conn_handle = conn_handle;
+        s_peers[target].connected_at = xTaskGetTickCount();
         s_peers[target].peer_addr = addr;
     }
     taskEXIT_CRITICAL(&s_peers_lock);
@@ -255,9 +294,14 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                 ESP_LOGW(TAG, "no free HID target; disconnecting extra host");
                 ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             } else {
-                xEventGroupSetBits(s_peer_events, BIT(target));
-                ESP_LOGI(TAG, "HID host connected as target %d", target + 1);
-                ble_gap_security_initiate(event->connect.conn_handle);
+                ESP_LOGI(TAG, "HID host link connected as target %d", target + 1);
+                int rc = ble_gap_security_initiate(event->connect.conn_handle);
+                if (rc != 0 && rc != BLE_HS_EALREADY) {
+                    ESP_LOGW(TAG, "target %d security initiation failed: %d",
+                             target + 1, rc);
+                    ble_gap_terminate(event->connect.conn_handle,
+                                      BLE_ERR_REM_USER_CONN_TERM);
+                }
                 advertise();
             }
         } else {
@@ -270,6 +314,11 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             xEventGroupClearBits(s_peer_events, BIT(target));
             taskENTER_CRITICAL(&s_peers_lock);
             s_peers[target].connected = false;
+            s_peers[target].encrypted = false;
+            s_peers[target].keyboard_notify = false;
+            s_peers[target].mouse_notify = false;
+            s_peers[target].ready = false;
+            s_peers[target].recovery_pending = false;
             s_peers[target].conn_handle = BLE_HS_CONN_HANDLE_NONE;
             taskEXIT_CRITICAL(&s_peers_lock);
         }
@@ -278,18 +327,49 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         advertise();
         break;
     }
-    case BLE_GAP_EVENT_SUBSCRIBE:
-        ESP_LOGI(TAG, "target %d subscription handle=%u notify=%u",
-                 target_for_handle(event->subscribe.conn_handle) + 1,
-                 event->subscribe.attr_handle, event->subscribe.cur_notify);
+    case BLE_GAP_EVENT_SUBSCRIBE: {
+        int target = target_for_handle(event->subscribe.conn_handle);
+        if (target >= 0) {
+            taskENTER_CRITICAL(&s_peers_lock);
+            if (event->subscribe.attr_handle == s_keyboard_handle)
+                s_peers[target].keyboard_notify = event->subscribe.cur_notify;
+            else if (event->subscribe.attr_handle == s_mouse_handle)
+                s_peers[target].mouse_notify = event->subscribe.cur_notify;
+            taskEXIT_CRITICAL(&s_peers_lock);
+            update_ready((size_t)target);
+        }
+        ESP_LOGI(TAG, "target %d subscription handle=%u reason=%u notify=%u",
+                 target + 1, event->subscribe.attr_handle,
+                 event->subscribe.reason, event->subscribe.cur_notify);
         break;
+    }
     case BLE_GAP_EVENT_ENC_CHANGE:
         if (event->enc_change.status == 0) {
+            struct ble_gap_conn_desc desc;
+            int target = target_for_handle(event->enc_change.conn_handle);
+            bool encrypted = ble_gap_conn_find(event->enc_change.conn_handle,
+                                               &desc) == 0 &&
+                             desc.sec_state.encrypted;
+            if (target >= 0) {
+                taskENTER_CRITICAL(&s_peers_lock);
+                s_peers[target].encrypted = encrypted;
+                taskEXIT_CRITICAL(&s_peers_lock);
+                update_ready((size_t)target);
+            }
             update_peer_identity(event->enc_change.conn_handle);
-            ESP_LOGI(TAG, "target %d secure link established",
-                     target_for_handle(event->enc_change.conn_handle) + 1);
+            ESP_LOGI(TAG, "target %d link encryption %s",
+                     target + 1, encrypted ? "enabled" : "disabled");
         } else {
+            int target = target_for_handle(event->enc_change.conn_handle);
+            if (target >= 0) {
+                taskENTER_CRITICAL(&s_peers_lock);
+                s_peers[target].encrypted = false;
+                taskEXIT_CRITICAL(&s_peers_lock);
+                update_ready((size_t)target);
+            }
             ESP_LOGW(TAG, "link security failed: %d", event->enc_change.status);
+            ble_gap_terminate(event->enc_change.conn_handle,
+                              BLE_ERR_REM_USER_CONN_TERM);
         }
         break;
     case BLE_GAP_EVENT_REPEAT_PAIRING: {
@@ -319,6 +399,8 @@ static void advertise(void)
     fields.uuids16 = (ble_uuid16_t *)&hid_uuid;
     fields.num_uuids16 = 1;
     fields.uuids16_is_complete = 1;
+    fields.appearance = HID_APPEARANCE_GENERIC;
+    fields.appearance_is_present = 1;
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "set advertising fields failed: %d", rc);
@@ -366,6 +448,52 @@ static void host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
+static void reconnect_watchdog_task(void *param)
+{
+    (void)param;
+    const TickType_t timeout = pdMS_TO_TICKS(HID_READY_TIMEOUT_MS);
+
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(HID_WATCHDOG_PERIOD_MS));
+        TickType_t now = xTaskGetTickCount();
+
+        for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
+            uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            bool encrypted = false;
+            bool keyboard_notify = false;
+            bool mouse_notify = false;
+
+            taskENTER_CRITICAL(&s_peers_lock);
+            hid_peer_t *peer = &s_peers[i];
+            if (peer->connected && !peer->ready && !peer->recovery_pending &&
+                now - peer->connected_at >= timeout) {
+                peer->recovery_pending = true;
+                conn_handle = peer->conn_handle;
+                encrypted = peer->encrypted;
+                keyboard_notify = peer->keyboard_notify;
+                mouse_notify = peer->mouse_notify;
+            }
+            taskEXIT_CRITICAL(&s_peers_lock);
+
+            if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+                ESP_LOGW(TAG,
+                         "target %u HID setup timed out (encrypted=%u keyboard_notify=%u "
+                         "mouse_notify=%u); disconnecting to retry",
+                         (unsigned)i + 1, encrypted, keyboard_notify, mouse_notify);
+                int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                if (rc != 0 && rc != BLE_HS_ENOTCONN) {
+                    ESP_LOGW(TAG, "target %u retry disconnect failed: %d",
+                             (unsigned)i + 1, rc);
+                    taskENTER_CRITICAL(&s_peers_lock);
+                    if (s_peers[i].conn_handle == conn_handle)
+                        s_peers[i].recovery_pending = false;
+                    taskEXIT_CRITICAL(&s_peers_lock);
+                }
+            }
+        }
+    }
+}
+
 esp_err_t ble_hid_init(void)
 {
     s_peer_events = xEventGroupCreate();
@@ -380,6 +508,7 @@ esp_err_t ble_hid_init(void)
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_svc_gap_device_name_set(app_settings_get()->ble_device_name);
+    ble_svc_gap_device_appearance_set(HID_APPEARANCE_GENERIC);
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
     ble_hs_cfg.sm_bonding = 1;
@@ -393,6 +522,9 @@ esp_err_t ble_hid_init(void)
     if (!rc) rc = ble_gatts_add_svcs(s_services);
     if (rc) return ESP_FAIL;
     nimble_port_freertos_init(host_task);
+    if (xTaskCreate(reconnect_watchdog_task, "hid_reconnect", 3072, NULL, 5,
+                    NULL) != pdPASS)
+        return ESP_ERR_NO_MEM;
     return ESP_OK;
 }
 
@@ -401,7 +533,7 @@ bool ble_hid_connected(size_t target)
     if (target >= APP_MAX_HID_DEVICES) return false;
     bool connected;
     taskENTER_CRITICAL(&s_peers_lock);
-    connected = s_peers[target].connected;
+    connected = s_peers[target].ready;
     taskEXIT_CRITICAL(&s_peers_lock);
     return connected;
 }
@@ -416,7 +548,7 @@ bool ble_hid_peer_info(size_t target, bool *connected, char *address,
     peer = s_peers[target];
     taskEXIT_CRITICAL(&s_peers_lock);
 
-    if (connected) *connected = peer.connected;
+    if (connected) *connected = peer.ready;
     if (address && address_capacity > 0) {
         if (peer.has_peer) {
             snprintf(address, address_capacity, "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -483,7 +615,10 @@ static void notify(size_t target, uint16_t handle, const void *data, uint16_t le
     if (target >= APP_MAX_HID_DEVICES) return;
     uint16_t conn_handle;
     taskENTER_CRITICAL(&s_peers_lock);
-    conn_handle = s_peers[target].connected
+    bool subscribed = (handle == s_keyboard_handle &&
+                       s_peers[target].keyboard_notify) ||
+                      (handle == s_mouse_handle && s_peers[target].mouse_notify);
+    conn_handle = s_peers[target].ready && subscribed
         ? s_peers[target].conn_handle : BLE_HS_CONN_HANDLE_NONE;
     taskEXIT_CRITICAL(&s_peers_lock);
     if (conn_handle == BLE_HS_CONN_HANDLE_NONE) return;
