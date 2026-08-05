@@ -129,7 +129,7 @@ static void key_event(deskflow_client_t *client, uint16_t key, uint16_t mask, bo
     case 0xEFEC: if (down) client->modifiers |= 0x80; else client->modifiers &= ~0x80; break;
     default: break;
     }
-    ESP_LOGI(TAG, "[%s] key %s id=0x%04x hid=0x%02x",
+    ESP_LOGD(TAG, "[%s] key %s id=0x%04x hid=0x%02x",
              client->screen_name, down ? "down" : "up", key, code);
     if (code) {
         if (down) {
@@ -203,7 +203,7 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
         client->have_position = true;
         client->have_last_move = false;
         rgb_led_show_device(client->target);
-        ESP_LOGI(TAG, "[%s] cursor entered at %d,%d",
+        ESP_LOGD(TAG, "[%s] cursor entered at %d,%d",
                  client->screen_name, client->last_x, client->last_y);
     } else if (!memcmp(p, "DKDL", 4) && n >= 14) {
         /* Protocol 1.8: key, modifier mask, physical button, language string. */
@@ -218,13 +218,13 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
     } else if (!memcmp(p, "DMDN", 4) && n >= 5) {
         uint8_t button_mask = hid_mouse_button_mask(p[4]);
         client->buttons |= button_mask;
-        ESP_LOGI(TAG, "[%s] mouse button down deskflow=%u hid_mask=0x%02x",
+        ESP_LOGD(TAG, "[%s] mouse button down deskflow=%u hid_mask=0x%02x",
                  client->screen_name, p[4], button_mask);
         ble_hid_mouse(client->target, client->buttons, 0, 0, 0);
     } else if (!memcmp(p, "DMUP", 4) && n >= 5) {
         uint8_t button_mask = hid_mouse_button_mask(p[4]);
         client->buttons &= (uint8_t)~button_mask;
-        ESP_LOGI(TAG, "[%s] mouse button up deskflow=%u hid_mask=0x%02x",
+        ESP_LOGD(TAG, "[%s] mouse button up deskflow=%u hid_mask=0x%02x",
                  client->screen_name, p[4], button_mask);
         ble_hid_mouse(client->target, client->buttons, 0, 0, 0);
     } else if (!memcmp(p, "DMRM", 4) && n >= 8) {
@@ -258,7 +258,7 @@ static bool parse_frame(deskflow_client_t *client, int fd, const uint8_t *p, siz
             client->exit_x = (int)client->last_x + compensation_dx;
             client->exit_y = (int)client->last_y + compensation_dy;
             client->have_exit_position = true;
-            ESP_LOGI(TAG,
+            ESP_LOGD(TAG,
                      "[%s] cursor left at %d,%d; COUT compensation %d,%d (x%d)",
                      client->screen_name, client->last_x, client->last_y,
                      compensation_dx, compensation_dy,
