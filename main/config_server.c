@@ -294,8 +294,16 @@ static esp_err_t hid_handler(httpd_req_t *req)
     HTTP_RETURN_ON_ERROR(send_nav(req, "hid"));
     HTTP_RETURN_ON_ERROR(httpd_resp_send_chunk(req,
         "<form method=\"post\" action=\"/save-hid\">"
-        "<section class=\"card\"><h2>HID 设置</h2>",
+        "<section class=\"card\"><h2>HID 设置</h2><div class=\"grid\">",
         HTTPD_RESP_USE_STRLEN));
+    char brightness[4];
+    snprintf(brightness, sizeof(brightness), "%u", settings->rgb_led_brightness);
+    HTTP_RETURN_ON_ERROR(send_input(req, "设备位置 RGB 灯亮度", "rgb_led_brightness",
+                               "number", brightness,
+                               "required min=\"0\" max=\"255\" class=\"wide\""));
+    HTTP_RETURN_ON_ERROR(httpd_resp_send_chunk(req,
+        "<p class=\"hint wide\">0 表示关闭，255 表示最亮。夜间建议使用较低数值。</p>"
+        "</div>", HTTPD_RESP_USE_STRLEN));
     for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
         char block[128];
         snprintf(block, sizeof(block),
@@ -491,6 +499,12 @@ static esp_err_t save_hid_handler(httpd_req_t *req)
     if (read_err != ESP_OK || form[0] == '\0') return read_err;
 
     app_settings_t settings = *app_settings_get();
+    char brightness[4];
+    uint16_t brightness_value;
+    if (form_value(form, "rgb_led_brightness", brightness,
+                   sizeof(brightness)) != ESP_OK ||
+        !parse_u16(brightness, 0, 255, &brightness_value)) goto invalid;
+    settings.rgb_led_brightness = (uint8_t)brightness_value;
     for (size_t i = 0; i < APP_MAX_HID_DEVICES; ++i) {
         char field[16], width[8], height[8];
         snprintf(field, sizeof(field), "hid%u_name", (unsigned)i + 1);

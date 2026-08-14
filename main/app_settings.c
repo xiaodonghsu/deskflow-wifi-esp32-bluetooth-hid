@@ -22,6 +22,7 @@ static void set_defaults(void)
             sizeof(s_settings.usb_dhcp_server_ip));
     strlcpy(s_settings.ble_device_name, APP_BLE_DEVICE_NAME,
             sizeof(s_settings.ble_device_name));
+    s_settings.rgb_led_brightness = APP_RGB_LED_BRIGHTNESS;
     strlcpy(s_settings.hid[0].name, APP_HID_1_NAME, sizeof(s_settings.hid[0].name));
     s_settings.hid[0].width = APP_HID_1_WIDTH;
     s_settings.hid[0].height = APP_HID_1_HEIGHT;
@@ -57,6 +58,7 @@ esp_err_t app_settings_init(void)
     get_string(nvs, "usb_dhcp_ip", s_settings.usb_dhcp_server_ip,
                sizeof(s_settings.usb_dhcp_server_ip));
     get_string(nvs, "ble_name", s_settings.ble_device_name, sizeof(s_settings.ble_device_name));
+    nvs_get_u8(nvs, "rgb_bright", &s_settings.rgb_led_brightness);
     uint16_t port;
     if (nvs_get_u16(nvs, "port", &port) == ESP_OK && port != 0)
         s_settings.deskflow_port = port;
@@ -111,6 +113,8 @@ esp_err_t app_settings_save(const app_settings_t *settings)
     if (err == ESP_OK) err = nvs_set_str(nvs, "usb_dhcp_ip",
                                          settings->usb_dhcp_server_ip);
     if (err == ESP_OK) err = nvs_set_str(nvs, "ble_name", settings->ble_device_name);
+    if (err == ESP_OK) err = nvs_set_u8(nvs, "rgb_bright",
+                                        settings->rgb_led_brightness);
     for (size_t i = 0; err == ESP_OK && i < APP_MAX_HID_DEVICES; ++i) {
         char key[8];
         snprintf(key, sizeof(key), "hname%u", (unsigned)i);

@@ -1,5 +1,6 @@
 #include "rgb_led.h"
 #include "app_config.h"
+#include "app_settings.h"
 
 #include <stdint.h>
 #include "esp_check.h"
@@ -44,18 +45,20 @@ esp_err_t rgb_led_init(void)
 
 void rgb_led_show_device(size_t device_index)
 {
-    static const uint8_t colors[][3] = {
-        {APP_RGB_LED_BRIGHTNESS, 0, 0},
-        {0, APP_RGB_LED_BRIGHTNESS, 0},
-        {0, 0, APP_RGB_LED_BRIGHTNESS},
+    static const uint8_t color_channels[][3] = {
+        {1, 0, 0},
+        {0, 1, 0},
+        {0, 0, 1},
     };
-    if (!s_strip || device_index >= sizeof(colors) / sizeof(colors[0]))
+    if (!s_strip || device_index >= sizeof(color_channels) / sizeof(color_channels[0]))
         return;
+    uint8_t brightness = app_settings_get()->rgb_led_brightness;
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     esp_err_t err = led_strip_set_pixel(
-        s_strip, 0, colors[device_index][0], colors[device_index][1],
-        colors[device_index][2]);
+        s_strip, 0, color_channels[device_index][0] * brightness,
+        color_channels[device_index][1] * brightness,
+        color_channels[device_index][2] * brightness);
     if (err == ESP_OK) err = led_strip_refresh(s_strip);
     xSemaphoreGive(s_lock);
     if (err != ESP_OK)

@@ -45,7 +45,7 @@ ESP32-S3 优先通过 USB CDC-NCM、备用通过 Wi-Fi STA 与 Deskflow 服务�
 - 虚拟屏幕尺寸：`1920x1080`
 - 蓝牙名称：`Deskflow ESP32 HID`
 - 最大同时 HID 主机数：`3`
-- 板载 RGB 灯：GPIO48；光标进入设备 1/2/3 时显示红/绿/蓝，离开时熄灭
+- 板载 RGB 灯：GPIO48，默认亮度 `64`；光标进入设备 1/2/3 时显示红/绿/蓝，离开时熄灭
 
 可在 `main/app_config.h` 中修改这些值。
 
@@ -68,7 +68,7 @@ http://192.168.101.1/
   <img src="docs/images/config-page-hid.png" width="200" alt="Deskflow-Wifi-ESP32-HID">
 </div>
 
-页面包含通信设置（Wi-Fi 凭据、STA 备用 Deskflow 服务器的 IPv4 地址和端口、SoftAP 凭据、USB NCM DHCP Server 地址以及 BLE 设备名称），以及每个 HID 槽位单独的 Deskflow 屏幕名称、宽度、高度和“自动锁屏”选项。启用自动锁屏后，鼠标离开对应屏幕（收到 `COUT`）时，ESP32 会向该蓝牙设备发送 Keyboard Power 键。点击 **保存并重启设备** 来验证并将表单持久化到 NVS 中。已保存的值将覆盖 `main/app_config.h` 中的编译时默认值。
+页面包含通信设置（Wi-Fi 凭据、STA 备用 Deskflow 服务器的 IPv4 地址和端口、SoftAP 凭据、USB NCM DHCP Server 地址以及 BLE 设备名称），以及 HID 设置页顶部的设备位置 RGB 灯亮度（`0` 表示关闭，`255` 表示最亮）和每个 HID 槽位单独的 Deskflow 屏幕名称、宽度、高度、“自动锁屏”选项。启用自动锁屏后，鼠标离开对应屏幕（收到 `COUT`）时，ESP32 会向该蓝牙设备发送 Keyboard Power 键。点击 **保存并重启设备** 来验证并将表单持久化到 NVS 中。已保存的值将覆盖 `main/app_config.h` 中的编译时默认值。
 
 SoftAP 密码是可选的。如果非空，必须包含 8-63 个字符；留空则会创建一个开放的配置网络。
 

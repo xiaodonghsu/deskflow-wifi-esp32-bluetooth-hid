@@ -28,6 +28,7 @@ typedef struct {
     char softap_password[APP_SETTINGS_PASS_LEN];
     char usb_dhcp_server_ip[APP_SETTINGS_HOST_LEN];
     char ble_device_name[APP_SETTINGS_BLE_NAME_LEN];
+    uint8_t rgb_led_brightness;
     app_hid_settings_t hid[APP_MAX_HID_DEVICES];
 } app_settings_t;
 
