@@ -21,6 +21,27 @@ ESP32-S3 优先通过 USB CDC-NCM、备用通过 Wi-Fi STA 与 Deskflow 服务�
 - 由于鼠标方式出入屏幕的位置与标准的差异，可能出现鼠标在屏幕内边界上，无法向一个方向移动，这是只需要将鼠标向相反方向移动距离大一点，再返回，一般可以解决。
 - 目前只支持3个设备，表现良好。用户可以自行尝试更多设备。
 
+## 编译前必须注意
+
+Windows 11 在更新到 10.0.26200 后, 可能出现  Espressif Systems USB net 网卡无法加载的问题。
+
+```text
+该设备无法启动。 (代码 10)
+```
+
+USB 异常消息
+![alt text](docs\images\usb-abnormal-divisor-1.png)
+
+USB 正常消息
+![alt text](docs\images\usb-normal-divisor-4.png)
+
+请在编译前 修改 managed_components\espressif__tinyusb\src\class\net\ncm_device.c
+
+```text
+  .wNdbInDivisor            = 4,
+  .wNdbOutDivisor           = 4,
+```
+
 ## 一些技巧
 
 - 连接手机或平板，屏幕宽度和屏幕高度都，设置为最长边，可以在屏幕旋转中的体验更好。例如, 2504x1080的手机，可以设置屏幕宽度和屏幕高度都是 2504。
