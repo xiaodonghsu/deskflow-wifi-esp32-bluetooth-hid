@@ -30,10 +30,10 @@ Windows 11 在更新到 10.0.26200 后, 可能出现  Espressif Systems USB net 
 ```
 
 USB 异常消息
-![alt text](docs\images\usb-abnormal-divisor-1.png)
+![alt text](docs/images/usb-abnormal-divisor-1.png)
 
 USB 正常消息
-![alt text](docs\images\usb-normal-divisor-4.png)
+![alt text](docs/images/usb-normal-divisor-4.png)
 
 请在编译前 修改 managed_components\espressif__tinyusb\src\class\net\ncm_device.c
 
